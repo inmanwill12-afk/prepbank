@@ -95,6 +95,11 @@ create policy "users insert their own profile" on public.profiles
 drop policy if exists "users update their own profile" on public.profiles;
 create policy "users update their own profile" on public.profiles
   for update using (auth.uid() = id);
+-- Column-level lock: users may only change their own display_name, never
+-- is_admin (otherwise anyone could make themselves an admin from the browser).
+-- Profile rows are created by the signup trigger below, not by the browser.
+revoke insert, update on public.profiles from anon, authenticated;
+grant update (display_name) on public.profiles to authenticated;
 
 -- classes: any signed-in student can browse and add a class; admins can
 -- edit or delete any class (used by the in-app Admin page).
