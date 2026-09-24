@@ -1,0 +1,9 @@
+{
+  "name": "prepbank",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PrepBank -- crowdsourced practice tests for your school, generated from real study materials.",
+  "engines": {
+    "node": ">=18"
+  }
+}
