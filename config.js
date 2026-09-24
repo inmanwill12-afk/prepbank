@@ -7,5 +7,5 @@
 
 window.PREPBANK_CONFIG = {
   SUPABASE_URL: "https://zignzktrjsiklwepuhom.supabase.co",
-  SUPABASE_ANON_KEY: "PASTE-YOUR-PUBLISHABLE-KEY-HERE",
+  SUPABASE_ANON_KEY: "sb_publishable_XH-grmaO8yT9gqgDf5__FQ_pAL0Zo2r",
 };
