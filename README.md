@@ -157,6 +157,27 @@ replace its contents, and commit. That's it; Vercel takes it from there.
 For a really small change I can usually give you the exact lines to
 paste in rather than a whole file.
 
+## Payments: PrepBank+ ($3/month with Stripe)
+
+The code is already in place: `api/checkout.js`, `api/stripe-webhook.js`, `api/portal.js` and `api/_lib.js`. The price is built into the checkout, so you don't have to create a product in Stripe. To turn it on:
+
+1. **Create a Stripe account** at stripe.com (the account holder must be 18+). Start in **Test mode** (toggle at the top of the dashboard).
+2. **Secret key:** Developers -> API keys -> copy the **Secret key** (`sk_test_...`). In Vercel -> Settings -> Environment Variables, add `STRIPE_SECRET_KEY`.
+3. **Webhook:** Developers -> Webhooks -> Add endpoint:
+   - URL: `https://prepbank.vercel.app/api/stripe-webhook`
+   - Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
+   - Copy the **Signing secret** (`whsec_...`) into a Vercel variable named `STRIPE_WEBHOOK_SECRET`.
+4. **Supabase secret key:** Supabase -> Project Settings -> API Keys -> **Secret keys** -> copy it into a Vercel variable named `SUPABASE_SERVICE_ROLE_KEY`. The webhook uses it to turn PrepBank+ on after someone pays. Never put it in `config.js`.
+5. **Customer portal** (so people can cancel): Stripe -> Settings -> Billing -> Customer portal -> click **Save/Activate**.
+6. Redeploy in Vercel (Deployments -> ... -> Redeploy), then test with card `4242 4242 4242 4242`, any future date and any CVC.
+7. When it works, switch Stripe to **Live mode**, repeat steps 2-3 with the live keys, and redeploy.
+
+Optional: `PREPBANK_PRICE_CENTS` changes the price (default `300` = $3.00).
+
+## Classes
+
+`supabase/002_hpisd_classes_and_stripe.sql` loads every HPHS course that involves studying (from the 2026-27 Academic Planning Guide). Only admins can add classes (Admin page -> Classes). Students search for their class and add study material to it. Tests you publish as admin show an **Official PrepBank** badge and are pinned to the top. Student tests say **Student-made** and credit the student.
+
 ## What's a placeholder right now
 
 - **Payments.** The subscription is a single `status` column

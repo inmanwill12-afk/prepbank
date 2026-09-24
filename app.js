@@ -34,6 +34,9 @@
     authBusy: false,
     classes: [],
     classesLoaded: false,
+    classCounts: {},
+    classQuery: "",
+    classDept: "All",
     currentClass: null,
     tests: [],
     testsLoaded: false,
@@ -46,8 +49,11 @@
       busy: false,
       error: null,
       saving: false,
+      official: true,
+      access: "plus",
     },
     quiz: null,
+    checkoutBusy: false,
     flash: null,
     subscribeOpen: false,
     subscribeBusy: false,
@@ -59,8 +65,15 @@
       importText: "",
       importError: null,
       importBusy: false,
+      classQuery: "",
     },
   };
+
+  const DEPARTMENTS = ["All", "English", "Math", "Science", "Social Studies", "Languages", "CS & Business", "Health"];
+
+  function isAdmin() {
+    return !!(state.profile && state.profile.is_admin);
+  }
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
@@ -89,11 +102,42 @@
     state.view = "browse";
     render();
     loadClasses();
+    handleCheckoutReturn();
+  }
+
+  async function refreshSubscription() {
+    const { data } = await sb.from("subscriptions").select("*").eq("user_id", state.profile.id).maybeSingle();
+    if (data) state.subscription = data;
+    return data;
+  }
+
+  // Back from Stripe Checkout: the webhook may take a few seconds to land.
+  async function handleCheckoutReturn() {
+    const params = new URLSearchParams(location.search);
+    const result = params.get("checkout");
+    if (!result) return;
+    history.replaceState(null, "", location.pathname);
+    if (result === "cancel") { setToast("Checkout canceled -- you weren't charged."); return; }
+    setToast("Payment received! Turning on PrepBank+...");
+    for (let i = 0; i < 10; i++) {
+      const sub = await refreshSubscription();
+      if (sub && sub.status === "active") { render(); setToast("Welcome to PrepBank+! Every test is unlocked."); return; }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    setToast("Payment went through, but PrepBank+ is still activating. Refresh in a minute.");
   }
 
   async function loadClasses() {
-    const { data, error } = await sb.from("classes").select("*").order("created_at", { ascending: false });
-    if (!error) { state.classes = data || []; state.classesLoaded = true; render(); }
+    const [{ data, error }, { data: counts }] = await Promise.all([
+      sb.from("classes").select("*").order("sort_order", { ascending: true }).order("name", { ascending: true }),
+      sb.from("class_test_counts").select("*"),
+    ]);
+    if (!error) {
+      state.classes = data || [];
+      state.classCounts = Object.fromEntries((counts || []).map((c) => [c.class_id, c]));
+      state.classesLoaded = true;
+      render();
+    }
   }
 
   async function openClass(cls) {
@@ -104,10 +148,11 @@
     render();
     const { data, error } = await sb
       .from("tests")
-      .select("*")
+      .select("*, profiles(display_name)")
       .eq("class_id", cls.id)
       .order("created_at", { ascending: false });
-    if (!error) { state.tests = data || []; }
+    // Official tests first, then newest student tests
+    if (!error) { state.tests = (data || []).sort((a, b) => (b.is_official ? 1 : 0) - (a.is_official ? 1 : 0)); }
     state.testsLoaded = true;
     render();
   }
@@ -115,7 +160,7 @@
   async function loadAdminData() {
     const [{ data: tests }, { data: classes }] = await Promise.all([
       sb.from("tests").select("*, classes(name)").order("created_at", { ascending: false }),
-      sb.from("classes").select("*").order("created_at", { ascending: false }),
+      sb.from("classes").select("*").order("sort_order", { ascending: true }).order("name", { ascending: true }),
     ]);
     state.admin.tests = tests || [];
     state.admin.classes = classes || [];
@@ -168,10 +213,11 @@
         title: parsed.title || parsed.className + " Practice Test",
         created_by: state.profile.id,
         is_free: !!parsed.isFree,
+        is_official: parsed.isOfficial !== false,
         question_count: mcAndShort.length,
         questions: mcAndShort,
         flashcards,
-        source_note: "Imported via Claude",
+        source_note: parsed.sourceNote || "Imported via Claude",
       }).select("*, classes(name)").single();
       if (testError) throw testError;
       a.tests.unshift(test);
@@ -188,8 +234,12 @@
     return !!(state.subscription && state.subscription.status === "active");
   }
 
+  function hasPlus() {
+    return isSubscribed() || isAdmin() || !!(state.profile && state.profile.is_premium);
+  }
+
   function testIsLocked(test) {
-    if (test.is_free) return false;
+    if (test.is_free || hasPlus()) return false;
     if (state.profile && test.created_by === state.profile.id) return false;
     return !isSubscribed();
   }
@@ -241,10 +291,12 @@
   // ---------------------------------------------------------------------
 
   function resetBuilder() {
+    const admin = isAdmin();
     state.builder = {
       material: "", sourceNote: "",
-      counts: { mc: 6, short: 4, flashcards: 8 },
+      counts: admin ? { mc: 15, short: 5, flashcards: 20 } : { mc: 6, short: 4, flashcards: 8 },
       generated: null, busy: false, error: null, saving: false,
+      official: admin, access: "plus",
     };
   }
 
@@ -332,19 +384,23 @@
         ...b.generated.mc.map((q) => ({ ...q, type: "mc" })),
         ...b.generated.short.map((q) => ({ ...q, type: "short" })),
       ];
+      const admin = isAdmin();
       const row = {
         class_id: state.currentClass.id,
         title: title || "Practice test",
         created_by: state.profile.id,
-        is_free: state.tests.length === 0, // first test in a class is always free to try
+        // Admins choose free vs PrepBank+. For students, the first test in a class is free to try.
+        is_free: admin ? b.access === "free" : state.tests.length === 0,
+        is_official: admin && !!b.official,
         question_count: mcAndShort.length,
         questions: mcAndShort,
         flashcards: b.generated.flashcards,
         source_note: b.sourceNote || null,
       };
-      const { data, error } = await sb.from("tests").insert(row).select().single();
+      const { data, error } = await sb.from("tests").insert(row).select("*, profiles(display_name)").single();
       if (error) throw error;
       state.tests.unshift(data);
+      state.tests.sort((a, c) => (c.is_official ? 1 : 0) - (a.is_official ? 1 : 0));
       resetBuilder();
       state.view = "class";
       setToast("Practice test saved.");
@@ -508,24 +564,23 @@
   // Subscription (placeholder -- swap for real Stripe later, see README)
   // ---------------------------------------------------------------------
 
-  async function demoUnlock() {
+  // Calls one of our /api billing endpoints and sends the browser to the Stripe page it returns.
+  async function goToStripe(endpoint) {
     state.subscribeBusy = true;
     render();
-    const { data, error } = await sb
-      .from("subscriptions")
-      .update({ status: "active", plan: "demo", unlocked_at: new Date().toISOString() })
-      .eq("user_id", state.profile.id)
-      .select()
-      .single();
-    state.subscribeBusy = false;
-    if (!error) {
-      state.subscription = data;
-      state.subscribeOpen = false;
-      setToast("PrepBank+ unlocked (demo mode -- no real payment was made).");
-    } else {
-      setToast("Couldn't update your subscription.");
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + state.session.access_token },
+        body: "{}",
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok || !json.url) throw new Error(json.error || "Couldn't reach Stripe.");
+      window.location.href = json.url;
+    } catch (e) {
+      state.subscribeBusy = false;
+      setToast(e.message);
     }
-    render();
   }
 
   // ---------------------------------------------------------------------
@@ -547,8 +602,8 @@
           <button data-action="nav-browse" class="${state.view === "browse" ? "active" : ""}">Browse classes</button>
           ${state.profile && state.profile.is_admin ? `<button data-action="nav-admin" class="${state.view === "admin" ? "active" : ""}">Admin</button>` : ""}
         </nav>
-        <span class="pill ${isSubscribed() ? "gold" : ""}" data-action="open-subscribe" style="cursor:pointer">
-          ${isSubscribed() ? "PrepBank+" : "Free plan"}
+        <span class="pill ${hasPlus() ? "gold" : ""}" data-action="open-subscribe" style="cursor:pointer">
+          ${isAdmin() ? "Admin &middot; PrepBank+" : hasPlus() ? "PrepBank+" : "Free plan &middot; Upgrade"}
         </span>
         <span class="pill">${esc(state.profile ? state.profile.display_name : "")}</span>
         <button class="btn ghost small" data-action="signout">Sign out</button>
@@ -602,72 +657,128 @@
     </div>`;
   }
 
-  function browseView() {
-    if (!state.classesLoaded) return "<p>Loading classes&hellip;</p>";
-    const cards = state.classes.map((c) => `
-      <div class="card class-card" data-action="open-class" data-id="${c.id}">
-        <span class="tag">${esc(c.subject)}</span>
-        <h3>${esc(c.name)}</h3>
-        ${c.teacher ? `<div class="meta" style="color:var(--ink-soft);font-size:.85rem">${esc(c.teacher)}</div>` : ""}
-      </div>`).join("");
-    return `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
-        <h2 style="margin:0">Browse classes</h2>
-        <button class="btn primary" data-action="show-new-class">+ Add a class</button>
-      </div>
-      ${state.classes.length === 0 ? `<div class="card"><p>No classes yet -- be the first to add one for your school.</p></div>` : `<div class="grid cols-2">${cards}</div>`}
-      <div id="new-class-slot"></div>
-    `;
+  function levelTag(level) {
+    if (!level || level === "On-Level") return "";
+    const cls = level === "AP" || level === "Dual Credit" ? "level-ap" : level === "Honors" ? "level-honors" : "level-elective";
+    return `<span class="level ${cls}">${esc(level)}</span>`;
   }
 
-  function newClassForm() {
-    return `<div class="card" style="margin-top:1rem">
-      <h3>Add a class</h3>
-      <form id="new-class-form">
-        <div class="field"><label for="nc-name">Class name</label><input type="text" id="nc-name" name="name" placeholder="AP World History - Mr. Diaz" required /></div>
-        <div class="field"><label for="nc-subject">Subject</label><input type="text" id="nc-subject" name="subject" placeholder="AP World History" required /></div>
-        <div class="field"><label for="nc-teacher">Teacher (optional)</label><input type="text" id="nc-teacher" name="teacher" /></div>
-        <button class="btn primary" type="submit">Add class</button>
-        <button class="btn ghost" type="button" data-action="hide-new-class">Cancel</button>
-      </form>
-    </div>`;
+  function filteredClasses() {
+    const q = state.classQuery.trim().toLowerCase();
+    // Let "apush", "calc bc", "apwh" style searches still match
+    const aliases = { apush: "united states history", apwh: "ap world history", apgov: "united states government", apes: "environmental science", aphug: "human geography", calc: "calcul", precalc: "pre-calculus", chem: "chem", bio: "biolog", gov: "government", us: "united states", csa: "computer science a", apcsp: "ap computer science principles", psych: "psycholog", econ: "econom", lang: "language", lit: "literature" };
+    const terms = q.split(/\s+/).filter(Boolean).map((t) => aliases[t] || t);
+    return state.classes.filter((c) => {
+      if (state.classDept !== "All" && c.subject !== state.classDept) return false;
+      const hay = `${c.name} ${c.subject} ${c.level || ""}`.toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+  }
+
+  function classResults() {
+    const list = filteredClasses();
+    if (list.length === 0) {
+      return `<div class="card"><p>No classes match "${esc(state.classQuery)}". Every HPHS course is already listed -- try a shorter search like "chem" or "AP".</p></div>`;
+    }
+    const groups = {};
+    list.forEach((c) => { (groups[c.subject] = groups[c.subject] || []).push(c); });
+    return Object.entries(groups).map(([dept, classes]) => `
+      <h3 class="dept-heading">${esc(dept)} <span class="meta">${classes.length}</span></h3>
+      <div class="grid cols-3">
+        ${classes.map((c) => {
+          const n = state.classCounts[c.id] || { test_count: 0, official_count: 0 };
+          return `<div class="card class-card" data-action="open-class" data-id="${c.id}">
+            <div class="class-card-top">${levelTag(c.level)}${n.official_count ? '<span class="badge-official small">&#10003; Official</span>' : ""}</div>
+            <h3>${esc(c.name)}</h3>
+            <div class="meta">${n.test_count ? `${n.test_count} practice test${n.test_count === 1 ? "" : "s"}` : "No tests yet &middot; be the first"}</div>
+          </div>`;
+        }).join("")}
+      </div>`).join("");
+  }
+
+  function browseView() {
+    if (!state.classesLoaded) return "<p>Loading classes&hellip;</p>";
+    return `
+      <div class="browse-head">
+        <h2 style="margin:0">Find your class</h2>
+        <p class="help" style="margin:.2rem 0 0">Every Highland Park High School course that needs studying. Pick yours to practice -- or add your study guide so everyone in the class can use it.</p>
+      </div>
+      <input type="text" id="class-search" class="search" placeholder="Search classes -- try &quot;AP Bio&quot;, &quot;Chemistry Honors&quot;, &quot;Spanish III&quot;" value="${esc(state.classQuery)}" autocomplete="off" />
+      <div class="chips">
+        ${DEPARTMENTS.map((d) => `<button class="chip ${state.classDept === d ? "on" : ""}" data-action="filter-dept" data-dept="${esc(d)}">${esc(d)}</button>`).join("")}
+      </div>
+      <div id="class-results">${classResults()}</div>
+    `;
   }
 
   function classView() {
     const c = state.currentClass;
     if (!c) return "";
-    const rows = state.tests.map((t) => {
+    const row = (t) => {
       const locked = testIsLocked(t);
-      return `<div class="card test-row" data-action="open-test" data-id="${t.id}">
+      const author = t.profiles && t.profiles.display_name;
+      return `<div class="card test-row ${t.is_official ? "official" : "student"}" data-action="open-test" data-id="${t.id}">
         <div>
+          <div class="test-badges">
+            ${t.is_official ? '<span class="badge-official">&#10003; Official PrepBank</span>' : '<span class="badge-student">Student-made</span>'}
+            ${t.is_free ? '<span class="tag">Free</span>' : ""}
+          </div>
           <strong>${esc(t.title)}</strong>
-          <div class="meta">${t.question_count} question${t.question_count === 1 ? "" : "s"}${(t.flashcards || []).length ? ` &middot; ${t.flashcards.length} flashcards` : ""} ${t.is_free ? '&middot; <span class="tag">Free</span>' : ""}</div>
+          <div class="meta">${t.question_count} question${t.question_count === 1 ? "" : "s"}${(t.flashcards || []).length ? ` &middot; ${t.flashcards.length} flashcards` : ""}${!t.is_official && author ? ` &middot; shared by ${esc(author)}` : ""}</div>
         </div>
         ${locked ? `<span class="lock">&#128274; PrepBank+</span>` : `<span class="btn small">Open &rarr;</span>`}
       </div>`;
-    }).join("");
+    };
+    const official = state.tests.filter((t) => t.is_official);
+    const student = state.tests.filter((t) => !t.is_official);
+    const addLabel = isAdmin() ? "+ Publish an official test" : "+ Add your study guide";
     return `
       <button class="btn ghost small" data-action="nav-browse">&larr; All classes</button>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:0.5rem 0 1rem">
         <div>
-          <span class="tag">${esc(c.subject)}</span>
+          <span class="tag">${esc(c.subject)}</span> ${levelTag(c.level)}
           <h2 style="margin:.3rem 0 0">${esc(c.name)}</h2>
         </div>
-        <button class="btn gold" data-action="start-build-test">+ Generate a practice test</button>
+        <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${addLabel}</button>
       </div>
-      ${!state.testsLoaded ? "<p>Loading tests&hellip;</p>" : state.tests.length === 0 ? `<div class="card"><p>No practice tests for this class yet. Paste your study guide and generate the first one -- it'll be free for everyone.</p></div>` : rows}
+      ${!state.testsLoaded ? "<p>Loading tests&hellip;</p>" : state.tests.length === 0 ? `<div class="card"><p>No practice tests for this class yet. Add your study guide, notes or review sheet and PrepBank will turn it into the first practice test -- free for everyone in ${esc(c.name)}.</p></div>` : `
+        ${official.length ? `<h3 class="section-label">Official tests</h3>${official.map(row).join("")}` : ""}
+        ${student.length ? `<h3 class="section-label">From your classmates</h3>${student.map(row).join("")}` : ""}`}
     `;
   }
 
   function buildView() {
     const b = state.builder;
     if (b.generated) return buildPreview();
+    const admin = isAdmin();
+    const header = admin ? `
+      <div class="admin-banner">
+        <div><span class="badge-official">&#10003; Official PrepBank</span> <strong>Publishing as admin</strong></div>
+        <div class="help" style="margin:0">Official tests are pinned to the top of ${esc(state.currentClass.name)} with a checkmark, and you decide whether they're free or PrepBank+.</div>
+      </div>
+      <h2>Publish an official test</h2>
+      <div class="card admin-options">
+        <label class="check-row"><input type="checkbox" id="opt-official" ${b.official ? "checked" : ""} /> Mark as <strong>Official PrepBank</strong> test</label>
+        <div class="field" style="margin:.8rem 0 0">
+          <label>Who can take it?</label>
+          <div class="seg">
+            <button class="${b.access === "free" ? "on" : ""}" data-action="set-access" data-access="free">Free for everyone</button>
+            <button class="${b.access === "plus" ? "on" : ""}" data-action="set-access" data-access="plus">&#128274; PrepBank+ only</button>
+          </div>
+        </div>
+      </div>` : `
+      <h2>Add your study guide</h2>
+      <p class="help">Share what your teacher gave you -- a review sheet, notes, or a study guide -- and PrepBank turns it into practice questions and flashcards for everyone in ${esc(state.currentClass.name)}.</p>
+      <div class="note-box student-note">
+        <strong>Your test will show as "Student-made" and credit you by name.</strong>
+        Only share material from this class. No actual tests, quizzes or answer keys -- that's cheating and admins will remove it.
+        ${state.tests.length === 0 ? "<br />Since this is the first test in this class, it'll be free for everyone." : ""}
+      </div>`;
     return `
       <button class="btn ghost small" data-action="back-to-class">&larr; ${esc(state.currentClass.name)}</button>
-      <h2>Generate a practice test</h2>
-      <p class="help">Paste your study guide, notes, or review sheet below (or upload a .txt/.pdf). PrepBank turns it into practice questions and flashcards everyone in this class can use.</p>
+      ${header}
       ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
-      <div class="card">
+      <div class="card ${admin ? "admin-card" : ""}">
         <div class="field">
           <label for="material">Study material</label>
           <textarea id="material" placeholder="Paste your study guide, notes, or teacher's review sheet here...">${esc(b.material)}</textarea>
@@ -683,8 +794,9 @@
           <div class="field"><label for="count-short">Short answer</label><input type="number" id="count-short" min="0" max="25" value="${b.counts.short}" /></div>
           <div class="field"><label for="count-flash">Flashcards</label><input type="number" id="count-flash" min="0" max="40" value="${b.counts.flashcards}" /></div>
         </div>
-        <button class="btn primary" data-action="generate-test" ${b.busy ? "disabled" : ""}>${b.busy ? "Generating&hellip; (this can take up to a minute)" : "Generate practice test"}</button>
+        <button class="btn ${admin ? "primary" : "gold"}" data-action="generate-test" ${b.busy ? "disabled" : ""}>${b.busy ? "Generating&hellip; (this can take up to a minute)" : admin ? "Generate official test" : "Generate practice test"}</button>
       </div>
+      ${admin ? `<p class="help">Tip: you can also send your study material to Claude in chat and paste the result into Admin &rarr; Import.</p>` : ""}
     `;
   }
 
@@ -723,8 +835,9 @@
       <p class="help">Skim these for anything off before your classmates see them -- remove any question that doesn't look right.</p>
       ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
       <div class="card">
-        <div class="field"><label for="test-title">Test title</label><input type="text" id="test-title" value="${esc(state.currentClass.name + " Practice Test")}" /></div>
-        <button class="btn primary" data-action="save-test" ${b.saving ? "disabled" : ""}>${b.saving ? "Saving&hellip;" : "Save test to class"}</button>
+        <div class="field"><label for="test-title">Test title</label><input type="text" id="test-title" placeholder="e.g. Unit 3 -- Cell Energy" value="${esc(state.currentClass.name + " Practice Test")}" /></div>
+        ${isAdmin() ? `<p class="help" style="margin-top:0">Publishing as ${b.official ? "<strong>&#10003; Official</strong>" : "a regular test"} &middot; ${b.access === "free" ? "Free for everyone" : "PrepBank+ only"}</p>` : ""}
+        <button class="btn primary" data-action="save-test" ${b.saving ? "disabled" : ""}>${b.saving ? "Saving&hellip;" : isAdmin() ? "Publish to class" : "Share with my class"}</button>
       </div>
       ${g.mc.length ? `<h3 style="margin-top:1.5rem">Multiple choice (${g.mc.length})</h3>${mcHtml}` : ""}
       ${g.short.length ? `<h3 style="margin-top:1.5rem">Short answer (${g.short.length})</h3>${shortHtml}` : ""}
@@ -740,8 +853,10 @@
     const short = (t.questions || []).filter((q) => q.type === "short").length;
     return `
       <button class="btn ghost small" data-action="back-to-class">&larr; ${esc(state.currentClass.name)}</button>
+      <div class="test-badges" style="margin-top:.6rem">${t.is_official ? '<span class="badge-official">&#10003; Official PrepBank</span>' : `<span class="badge-student">Student-made${t.profiles && t.profiles.display_name ? " &middot; shared by " + esc(t.profiles.display_name) : ""}</span>`}</div>
       <h2>${esc(t.title)}</h2>
       <p class="meta">${mc} multiple choice &middot; ${short} short answer &middot; ${(t.flashcards || []).length} flashcards</p>
+      ${!t.is_official ? `<p class="help">Made from a classmate's study material -- double-check anything that looks off against your notes.</p>` : ""}
       ${locked ? `
         <div class="card">
           <p><strong>This test is part of PrepBank+.</strong> Unlock it (and every other test your school has added) to practice here.</p>
@@ -878,11 +993,20 @@
 
   function subscribeModal() {
     return `<div class="modal-backdrop" data-action="close-subscribe-backdrop">
-      <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal">
         <h2>PrepBank+</h2>
-        <p>Unlock every practice test your school has added, for every class -- not just the free first test in each one.</p>
-        <div class="note-box"><strong>Demo mode:</strong> real payments aren't connected yet. This button just flips a flag in the database so you can try the unlocked experience -- see README.md for wiring up real Stripe billing.</div>
-        <button class="btn gold block" data-action="demo-unlock" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? "Unlocking&hellip;" : "Unlock (demo, free)"}</button>
+        ${isAdmin() ? `<p>You're an admin, so every test is already unlocked for you.</p>` : isSubscribed() ? `
+          <p>You have PrepBank+ -- every practice test in every class is unlocked.</p>
+          ${state.subscription.current_period_end ? `<p class="help">Renews ${new Date(state.subscription.current_period_end).toLocaleDateString()}.</p>` : ""}
+          <button class="btn block" data-action="manage-billing" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? "Opening&hellip;" : "Manage or cancel subscription"}</button>` : `
+          <div class="price-line"><span class="price">$3</span><span class="help">/ month &middot; cancel anytime</span></div>
+          <ul class="perks">
+            <li>Every official PrepBank test, for every HPHS class</li>
+            <li>Every test your classmates have shared</li>
+            <li>Timed test mode, AI-graded short answers, flashcards</li>
+          </ul>
+          <button class="btn gold block" data-action="start-checkout" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? "Opening checkout&hellip;" : "Get PrepBank+"}</button>
+          <p class="help" style="text-align:center">Secure checkout by Stripe. You'll come right back here after paying.</p>`}
         <button class="btn ghost block" data-action="close-subscribe" style="margin-top:.5rem">Close</button>
       </div>
     </div>`;
@@ -892,20 +1016,24 @@
     const a = state.admin;
     if (!a.loaded) return "<p>Loading admin tools&hellip;</p>";
     const testsRows = a.tests.map((t) => `
-      <div class="card test-row">
+      <div class="card test-row ${t.is_official ? "official" : "student"}">
         <div>
+          <div class="test-badges">${t.is_official ? '<span class="badge-official">&#10003; Official</span>' : '<span class="badge-student">Student-made</span>'} ${t.is_free ? '<span class="tag">Free</span>' : '<span class="tag">PrepBank+</span>'}</div>
           <strong>${esc(t.title)}</strong>
-          <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; ${t.question_count} question${t.question_count === 1 ? "" : "s"} &middot; ${(t.flashcards || []).length} flashcards ${t.is_free ? '&middot; <span class="tag">Free</span>' : '&middot; <span class="tag">PrepBank+</span>'}</div>
+          <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; ${t.question_count} question${t.question_count === 1 ? "" : "s"} &middot; ${(t.flashcards || []).length} flashcards</div>
         </div>
         <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <button class="btn small" data-action="admin-toggle-official" data-id="${t.id}" data-official="${t.is_official}">${t.is_official ? "Remove Official" : "Make Official"}</button>
           <button class="btn small" data-action="admin-toggle-free" data-id="${t.id}" data-free="${t.is_free}">${t.is_free ? "Make PrepBank+" : "Make free"}</button>
           <button class="btn small danger" data-action="admin-delete-test" data-id="${t.id}">Delete</button>
         </div>
       </div>`).join("");
-    const classRows = a.classes.map((c) => `
-      <div class="card test-row">
-        <div><strong>${esc(c.name)}</strong><div class="meta">${esc(c.subject)}</div></div>
-        <button class="btn small danger" data-action="admin-delete-class" data-id="${c.id}">Delete class (and its tests)</button>
+    const cq = a.classQuery.trim().toLowerCase();
+    const shownClasses = a.classes.filter((c) => !cq || `${c.name} ${c.subject}`.toLowerCase().includes(cq));
+    const classRows = shownClasses.map((c) => `
+      <div class="admin-class-row">
+        <div><strong>${esc(c.name)}</strong> <span class="meta">${esc(c.subject)}${c.level ? " &middot; " + esc(c.level) : ""}</span></div>
+        <button class="btn small danger" data-action="admin-delete-class" data-id="${c.id}">Delete</button>
       </div>`).join("");
 
     return `
@@ -914,13 +1042,23 @@
         <h3>Import a test from Claude</h3>
         <p class="help">In your chat with Claude, paste your notes and ask for a "PrepBank import" for a specific class. Copy the JSON block Claude replies with and paste it below -- this creates the class automatically if it doesn't exist yet, and skips the AI generation step on the site (it's already generated).</p>
         ${a.importError ? `<div class="error-box">${esc(a.importError)}</div>` : ""}
-        <textarea id="admin-import-text" placeholder='{"className": "...", "subject": "...", "title": "...", "isFree": false, "mc": [...], "short": [...], "flashcards": [...]}'>${esc(a.importText)}</textarea>
+        <textarea id="admin-import-text" placeholder='{"className": "...", "subject": "...", "title": "...", "isFree": false, "isOfficial": true, "mc": [...], "short": [...], "flashcards": [...]}'>${esc(a.importText)}</textarea>
         <button class="btn primary" style="margin-top:.6rem" data-action="admin-import" ${a.importBusy ? "disabled" : ""}>${a.importBusy ? "Importing&hellip;" : "Import to PrepBank"}</button>
       </div>
       <h3 style="margin-top:1.5rem">All tests (${a.tests.length})</h3>
       ${a.tests.length === 0 ? '<p class="help">No tests yet.</p>' : testsRows}
-      <h3 style="margin-top:1.5rem">All classes (${a.classes.length})</h3>
-      ${a.classes.length === 0 ? '<p class="help">No classes yet.</p>' : classRows}
+      <h3 style="margin-top:1.5rem">Classes (${a.classes.length})</h3>
+      <p class="help">Only admins can add classes. Students search this list and add study material to it.</p>
+      <div class="card">
+        <form id="admin-class-form" class="admin-class-form">
+          <input type="text" name="name" placeholder="New class name, e.g. AP Art History" required />
+          <select name="subject">${DEPARTMENTS.filter((d) => d !== "All").map((d) => `<option>${esc(d)}</option>`).join("")}</select>
+          <select name="level"><option>On-Level</option><option>Honors</option><option>AP</option><option>Dual Credit</option><option>Elective</option></select>
+          <button class="btn primary" type="submit">Add class</button>
+        </form>
+      </div>
+      <input type="text" id="admin-class-search" class="search" style="margin-top:1rem" placeholder="Filter classes&hellip;" value="${esc(a.classQuery)}" />
+      <div class="card admin-class-list">${classRows || '<p class="help">No classes match.</p>'}</div>
     `;
   }
 
@@ -948,18 +1086,37 @@
     });
     const importEl = document.getElementById("admin-import-text");
     if (importEl) importEl.addEventListener("input", (e) => { state.admin.importText = e.target.value; });
+    // Class search re-renders only the results so the input keeps focus while typing
+    const searchEl = document.getElementById("class-search");
+    if (searchEl) searchEl.addEventListener("input", (e) => {
+      state.classQuery = e.target.value;
+      document.getElementById("class-results").innerHTML = classResults();
+    });
+    const adminSearch = document.getElementById("admin-class-search");
+    if (adminSearch) adminSearch.addEventListener("input", (e) => {
+      state.admin.classQuery = e.target.value;
+      const pos = e.target.selectionStart;
+      render();
+      const el = document.getElementById("admin-class-search");
+      if (el) { el.focus(); el.setSelectionRange(pos, pos); }
+    });
+    const officialEl = document.getElementById("opt-official");
+    if (officialEl) officialEl.addEventListener("change", (e) => { state.builder.official = e.target.checked; });
   }
 
   document.addEventListener("submit", (e) => {
     if (e.target.id === "auth-form") { e.preventDefault(); handleAuthSubmit(e.target); }
-    if (e.target.id === "new-class-form") {
+    if (e.target.id === "admin-class-form") {
       e.preventDefault();
       const f = e.target;
       sb.from("classes").insert({
-        name: f.name.value.trim(), subject: f.subject.value.trim(),
-        teacher: f.teacher.value.trim() || null, created_by: state.profile.id,
+        name: f.name.value.trim(), subject: f.subject.value, level: f.level.value,
+        created_by: state.profile.id, sort_order: 900,
       }).select().single().then(({ data, error }) => {
-        if (!error) { state.classes.unshift(data); render(); openClass(data); }
+        if (error) { setToast(error.message); return; }
+        state.admin.classes.push(data);
+        state.classes.push(data);
+        setToast('Added "' + data.name + '".');
       });
     }
   });
@@ -973,8 +1130,10 @@
       case "signout": handleSignOut(); break;
       case "auth-tab-signin": state.authMode = "signin"; state.authError = null; render(); break;
       case "auth-tab-signup": state.authMode = "signup"; state.authError = null; render(); break;
-      case "show-new-class": document.getElementById("new-class-slot").innerHTML = newClassForm(); break;
-      case "hide-new-class": document.getElementById("new-class-slot").innerHTML = ""; break;
+      case "filter-dept": state.classDept = el.dataset.dept; render(); break;
+      case "set-access": state.builder.access = el.dataset.access; render(); break;
+      case "start-checkout": goToStripe("/api/checkout"); break;
+      case "manage-billing": goToStripe("/api/portal"); break;
       case "open-class": {
         const cls = state.classes.find((c) => c.id === el.dataset.id);
         if (cls) openClass(cls);
@@ -1037,8 +1196,8 @@
       }
       case "close-flashcards": state.view = "test"; render(); break;
       case "open-subscribe": state.subscribeOpen = true; render(); break;
-      case "close-subscribe": case "close-subscribe-backdrop": state.subscribeOpen = false; render(); break;
-      case "demo-unlock": demoUnlock(); break;
+      case "close-subscribe": state.subscribeOpen = false; render(); break;
+      case "close-subscribe-backdrop": if (e.target === el) { state.subscribeOpen = false; render(); } break;
       case "nav-admin": state.view = "admin"; render(); loadAdminData(); break;
       case "admin-import": handleAdminImport(); break;
       case "admin-toggle-free": {
@@ -1053,6 +1212,18 @@
             } else {
               setToast("Couldn't update that test.");
             }
+          });
+        break;
+      }
+      case "admin-toggle-official": {
+        const id = el.dataset.id;
+        const makeOfficial = el.dataset.official !== "true";
+        sb.from("tests").update({ is_official: makeOfficial }).eq("id", id).select("*, classes(name)").single()
+          .then(({ data, error }) => {
+            if (error) { setToast("Couldn't update that test."); return; }
+            const idx = state.admin.tests.findIndex((t) => t.id === id);
+            if (idx !== -1) state.admin.tests[idx] = data;
+            render();
           });
         break;
       }
