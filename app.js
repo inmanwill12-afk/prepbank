@@ -185,13 +185,23 @@
     state.testsLoaded = false;
     state.view = "class";
     render();
-    const { data, error } = await sb
-      .from("tests")
-      .select("*, profiles(display_name)")
-      .eq("class_id", cls.id)
-      .order("created_at", { ascending: false });
+    const [{ data, error }, { data: listing }] = await Promise.all([
+      sb.from("tests").select("*, profiles(display_name)").eq("class_id", cls.id).order("created_at", { ascending: false }),
+      sb.rpc("class_test_list", { p_class: cls.id }),
+    ]);
+    if (state.currentClass !== cls) return;
+    // Tests this student can't open yet (PrepBank+) come back from the listing
+    // with counts only, so they still show up with a lock.
+    const readable = new Map((data || []).map((t) => [t.id, t]));
+    const stubs = (listing || []).filter((t) => !readable.has(t.id)).map((t) => ({
+      ...t,
+      questions: [...Array(t.mc_count || 0).fill({ type: "mc" }), ...Array(t.short_count || 0).fill({ type: "short" })],
+      flashcards: Array(t.flashcard_count || 0).fill({}),
+      profiles: { display_name: t.author },
+      preview_only: true,
+    }));
     // Official tests first, then newest student tests
-    if (!error) { state.tests = (data || []).sort((a, b) => (b.is_official ? 1 : 0) - (a.is_official ? 1 : 0)); }
+    if (!error) { state.tests = [...(data || []), ...stubs].sort((a, b) => (b.is_official ? 1 : 0) - (a.is_official ? 1 : 0)); }
     state.testsLoaded = true;
     render();
   }
@@ -462,6 +472,7 @@
   // ---------------------------------------------------------------------
 
   function startQuiz(test, mode) {
+    if (test.preview_only) { openClass(state.currentClass); return; }
     const questions = (test.questions || []).map((q, i) => ({ ...q, _id: "q" + i }));
     if (questions.length === 0) { setToast("This test has no multiple-choice or short-answer questions yet."); return; }
     const mcCount = questions.filter((q) => q.type === "mc").length;
@@ -600,6 +611,7 @@
   }
 
   function startFlashcards(test) {
+    if (test.preview_only) { openClass(state.currentClass); return; }
     const cards = test.flashcards || [];
     if (cards.length === 0) { setToast("This test has no flashcards."); return; }
     state.flash = { test, cards, order: cards.map((_, i) => i), index: 0, flipped: false, know: 0, learning: 0, done: {} };
