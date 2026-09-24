@@ -17,7 +17,26 @@
     return;
   }
 
-  const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+  // If a student's computer clock is wrong, supabase-js can keep using a login
+  // token the server already considers expired. When the database says so,
+  // refresh the session once and retry the request.
+  let refreshing = null;
+  async function resilientFetch(input, init) {
+    const res = await fetch(input, init);
+    if (res.status !== 401 || !String(input).includes("/rest/v1/")) return res;
+    const body = await res.clone().json().catch(() => ({}));
+    if (body.code !== "PGRST303" && !/jwt expired/i.test(body.message || "")) return res;
+    refreshing = refreshing || sb.auth.refreshSession().finally(() => setTimeout(() => { refreshing = null; }, 2000));
+    const { data } = await refreshing;
+    if (!data || !data.session) return res;
+    const headers = new Headers((init && init.headers) || {});
+    headers.set("Authorization", "Bearer " + data.session.access_token);
+    return fetch(input, { ...(init || {}), headers });
+  }
+
+  const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
+    global: { fetch: resilientFetch },
+  });
 
   // ---------------------------------------------------------------------
   // State
