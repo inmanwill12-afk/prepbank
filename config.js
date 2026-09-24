@@ -6,6 +6,6 @@
 // that one stays server-side only, in Vercel's environment variables.
 
 window.PREPBANK_CONFIG = {
-  SUPABASE_URL: "https://YOUR-PROJECT-REF.supabase.co",
-  SUPABASE_ANON_KEY: "YOUR-ANON-PUBLIC-KEY",
+  SUPABASE_URL: "https://zignzktrjsiklwepuhom.supabase.co",
+  SUPABASE_ANON_KEY: "PASTE-YOUR-PUBLISHABLE-KEY-HERE",
 };
