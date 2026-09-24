@@ -5,7 +5,7 @@
 // Optional:
 //   ANTHROPIC_MODEL    (defaults to a small, cheap model -- see README.md)
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-3-5-haiku-latest";
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
