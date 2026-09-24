@@ -57,6 +57,11 @@
     classQuery: "",
     classDept: "All",
     classLevel: "All levels",
+    classUnit: "all",
+    pins: [],
+    mine: null,
+    board: null,
+    settingsUi: {},
     currentClass: null,
     tests: [],
     testsLoaded: false,
@@ -71,6 +76,7 @@
       saving: false,
       official: true,
       access: "plus",
+      unit: "",
     },
     quiz: null,
     checkoutBusy: false,
@@ -129,9 +135,11 @@
     ]);
     state.profile = profile || { id: uid, display_name: state.session.user.email };
     state.subscription = sub || { user_id: uid, status: "free" };
+    applyAppearance(state.profile);
     state.view = "browse";
     render();
     loadClasses();
+    loadPins();
     handleCheckoutReturn();
   }
 
@@ -171,6 +179,7 @@
   }
 
   async function openClass(cls) {
+    if (!state.currentClass || state.currentClass.id !== cls.id) state.classUnit = "all";
     state.currentClass = cls;
     state.tests = [];
     state.testsLoaded = false;
@@ -244,6 +253,7 @@
         created_by: state.profile.id,
         is_free: !!parsed.isFree,
         is_official: parsed.isOfficial !== false,
+        unit: Number.isInteger(parsed.unit) ? parsed.unit : null,
         question_count: mcAndShort.length,
         questions: mcAndShort,
         flashcards,
@@ -288,6 +298,8 @@
     try {
       if (state.authMode === "signup") {
         if (!displayName) throw new Error("Enter a name so classmates know who added a test.");
+        const { data: badName } = await sb.rpc("is_inappropriate", { t: displayName });
+        if (badName) throw new Error("That name isn't allowed on PrepBank. Please choose another.");
         const { data, error } = await sb.auth.signUp({
           email, password,
           options: { data: { display_name: displayName } },
@@ -326,7 +338,7 @@
       material: "", sourceNote: "",
       counts: admin ? { mc: 15, short: 5, flashcards: 20 } : { mc: 6, short: 4, flashcards: 8 },
       generated: null, busy: false, error: null, saving: false,
-      official: admin, access: "plus",
+      official: admin, access: "plus", unit: "",
     };
   }
 
@@ -368,6 +380,7 @@
   async function handleGenerate() {
     const b = state.builder;
     b.error = null;
+    if (b.unit === "") { b.error = "Choose which unit this material is from."; render(); window.scrollTo(0, 0); return; }
     if (!b.material.trim()) { b.error = "Paste or upload some study material first."; render(); return; }
     const total = b.counts.mc + b.counts.short + b.counts.flashcards;
     if (total <= 0) { b.error = "Ask for at least one question or flashcard."; render(); return; }
@@ -422,6 +435,7 @@
         // Admins choose free vs PrepBank+. For students, the first test in a class is free to try.
         is_free: admin ? b.access === "free" : state.tests.length === 0,
         is_official: admin && !!b.official,
+        unit: b.unit === "" ? null : Number(b.unit),
         question_count: mcAndShort.length,
         questions: mcAndShort,
         flashcards: b.generated.flashcards,
@@ -435,7 +449,9 @@
       state.view = "class";
       setToast("Practice test saved.");
     } catch (e) {
-      b.error = e.message || "Couldn't save the test.";
+      b.error = isFilterError(e)
+        ? "Your test wasn't posted because it contains language that isn't allowed on PrepBank. Remove it and try again."
+        : e.message || "Couldn't save the test.";
       b.saving = false;
       render();
     }
@@ -632,6 +648,9 @@
     upload: '<path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
     shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/>',
     logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H3"/>',
+    pin: '<path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/>',
+    trophy: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4ZM17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/>',
   };
   function icon(name, cls) {
@@ -697,12 +716,13 @@
         <a href="#" class="brand" data-action="nav-browse">${brandMark()}<span>PrepBank</span></a>
         <nav class="topnav">
           <button data-action="nav-browse" class="${["browse", "class", "build", "test", "quiz", "review", "flashcards"].includes(state.view) ? "active" : ""}">Classes</button>
+          <button data-action="nav-mytests" class="${state.view === "mytests" ? "active" : ""}">My tests</button>
+          <button data-action="nav-leaderboard" class="${state.view === "leaderboard" ? "active" : ""}">Leaderboard</button>
           ${isAdmin() ? `<button data-action="nav-admin" class="${state.view === "admin" ? "active" : ""}">Admin</button>` : ""}
         </nav>
         <div class="top-right">
           <button class="plan-pill ${hasPlus() ? "plus" : ""}" data-action="open-subscribe">${hasPlus() ? icon("spark") : ""}${planLabel}</button>
-          <div class="user-chip" title="${esc(name)}"><span class="avatar">${esc(initials(name))}</span><span class="user-name">${esc(name)}</span></div>
-          <button class="btn ghost small signout" data-action="signout" aria-label="Sign out">${icon("logout")}<span>Sign out</span></button>
+          <button class="user-chip ${state.view === "settings" ? "active" : ""}" data-action="nav-settings" title="Settings">${avatarHtml(state.profile, 30)}<span class="user-name">${esc(name)}</span>${icon("gear", "gear")}</button>
         </div>
       </div></header>`;
     let body = "";
@@ -715,9 +735,12 @@
       case "review": body = reviewView(); break;
       case "flashcards": body = flashcardsView(); break;
       case "admin": body = adminView(); break;
+      case "mytests": body = myTestsView(); break;
+      case "leaderboard": body = leaderboardView(); break;
+      case "settings": body = settingsView(); break;
       default: body = skeletonRows();
     }
-    const wide = state.view === "browse" || state.view === "admin";
+    const wide = ["browse", "admin", "settings"].includes(state.view);
     return `<div class="shell">${nav}<main class="${wide ? "wide" : ""} ${entering ? "view-enter" : ""}">${body}</main>${footer()}</div>
       ${state.subscribeOpen ? subscribeModal(!lastModalOpen) : ""}`;
   }
@@ -825,20 +848,16 @@
       <span>${d === "All" ? "All departments" : esc(d)}</span><span class="num">${counts[d] || 0}</span></button>`).join("");
   }
 
-  function browseView() {
-    if (!state.classesLoaded) return skeletonRows();
+  function browseExtras() {
+    const filtering = state.classQuery || state.classDept !== "All" || (state.classLevel && state.classLevel !== "All levels");
+    if (filtering) return "";
     const popular = state.classes
       .filter((c) => (state.classCounts[c.id] || {}).test_count)
       .sort((a, b) => state.classCounts[b.id].test_count - state.classCounts[a.id].test_count)
       .slice(0, 4);
-    const filtering = state.classQuery || state.classDept !== "All" || (state.classLevel && state.classLevel !== "All levels");
     return `
-      <div class="page-head">
-        <div class="eyebrow">Highland Park High School &middot; Course catalog</div>
-        <h1>Find your class</h1>
-        <p class="sub">${state.classes.length} courses that involve real studying. Open yours to practice, or add your study guide so everyone in the class can use it.</p>
-      </div>
-      ${popular.length && !filtering ? `
+      ${pinnedSection()}
+      ${popular.length ? `
         <section class="popular">
           <div class="section-label">Most practiced right now</div>
           <div class="popular-grid">
@@ -848,7 +867,18 @@
               <span class="pc-count"><span class="num">${state.classCounts[c.id].test_count}</span> practice tests</span>
             </button>`).join("")}
           </div>
-        </section>` : ""}
+        </section>` : ""}`;
+  }
+
+  function browseView() {
+    if (!state.classesLoaded) return skeletonRows();
+    return `
+      <div class="page-head">
+        <div class="eyebrow">Highland Park High School &middot; Course catalog</div>
+        <h1>Find your class</h1>
+        <p class="sub">${state.classes.length} courses that involve real studying. Open yours to practice, or add your study guide so everyone in the class can use it.</p>
+      </div>
+      <div id="browse-extras">${browseExtras()}</div>
       <div class="catalog">
         <aside class="dept-rail" id="dept-rail" aria-label="Departments">${deptRail()}</aside>
         <div class="catalog-main">
@@ -877,7 +907,7 @@
     const locked = testIsLocked(t);
     const author = t.profiles && t.profiles.display_name;
     const fc = (t.flashcards || []).length;
-    return `<button class="test-row ${t.is_official ? "official" : "student"} ${locked ? "locked" : ""}" data-action="open-test" data-id="${t.id}">
+    return `<div class="test-row ${t.is_official ? "official" : "student"} ${locked ? "locked" : ""}" role="button" tabindex="0" data-action="open-test" data-id="${t.id}">
       <span class="tr-main">
         <span class="test-badges">
           ${t.is_official ? `<span class="badge-official">${icon("check")}Official</span>` : '<span class="badge-student">Student-made</span>'}
@@ -886,8 +916,8 @@
         <span class="tr-title">${esc(t.title)}</span>
         <span class="meta"><span class="num">${t.question_count}</span> questions${fc ? ` &middot; <span class="num">${fc}</span> flashcards` : ""}${!t.is_official && author ? ` &middot; shared by ${esc(author)}` : ""}</span>
       </span>
-      ${locked ? `<span class="lock">${icon("lock")}PrepBank+</span>` : `<span class="tr-open">Open${icon("chevron")}</span>`}
-    </button>`;
+      <span class="tr-side">${pinButton("test", t.id, true)}${locked ? `<span class="lock">${icon("lock")}PrepBank+</span>` : `<span class="tr-open">Open${icon("chevron")}</span>`}</span>
+    </div>`;
   }
 
   function classView() {
@@ -902,9 +932,19 @@
         <h3>No practice tests for ${esc(c.name)} yet</h3>
         <p>Add your study guide, notes or review sheet and PrepBank turns it into the first practice test for this class. The first one is free for everyone.</p>
         <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${icon("upload")}${addLabel}</button></div>`;
-    else body = `
-        ${official.length ? `<section class="test-group"><div class="section-label">Official tests <span class="num">${official.length}</span></div><div class="stagger">${official.map(testRow).join("")}</div></section>` : ""}
-        ${student.length ? `<section class="test-group"><div class="section-label">From your classmates <span class="num">${student.length}</span></div><div class="stagger">${student.map(testRow).join("")}</div></section>` : ""}`;
+    else {
+      const key = (t) => (t.unit === null || t.unit === undefined ? -1 : t.unit);
+      const units = [...new Set(state.tests.map(key))].sort((a, b) => (a < 0) - (b < 0) || a - b);
+      const shown = state.classUnit === "all" ? units : units.filter((u) => String(u) === String(state.classUnit));
+      const chips = units.length > 1 ? `<div class="seg unit-chips" role="group" aria-label="Filter by unit">
+          <button class="chip ${state.classUnit === "all" ? "on" : ""}" data-action="filter-unit" data-unit="all">All units</button>
+          ${units.map((u) => `<button class="chip ${String(state.classUnit) === String(u) ? "on" : ""}" data-action="filter-unit" data-unit="${u}">${esc(unitLabel(u))}</button>`).join("")}
+        </div>` : "";
+      body = chips + shown.map((u) => {
+        const list = state.tests.filter((t) => key(t) === u).sort((a, b) => (b.is_official ? 1 : 0) - (a.is_official ? 1 : 0));
+        return `<section class="test-group unit-group"><div class="unit-head"><h2>${esc(unitLabel(u))}</h2><span class="count">${list.length} ${list.length === 1 ? "test" : "tests"}</span></div><div class="stagger">${list.map(testRow).join("")}</div></section>`;
+      }).join("");
+    }
     return `
       ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: c.subject, action: "nav-browse" }, { label: c.name }])}
       <div class="page-head row">
@@ -913,7 +953,7 @@
           <h1>${esc(c.name)}</h1>
           <p class="sub">${state.testsLoaded ? `<span class="num">${state.tests.length}</span> practice ${state.tests.length === 1 ? "test" : "tests"}${official.length ? ` &middot; <span class="num">${official.length}</span> official` : ""}` : "&nbsp;"}</p>
         </div>
-        <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${icon("upload")}${addLabel}</button>
+        <div class="head-actions">${pinButton("class", c.id)}<button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${icon("upload")}${addLabel}</button></div>
       </div>
       ${body}
     `;
@@ -960,6 +1000,14 @@
       ${header}
       ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
       <div class="card builder-card ${admin ? "admin-card" : ""} ${b.busy ? "is-busy" : ""}">
+        <div class="field unit-field">
+          <label for="unit-select">Unit</label>
+          <select id="unit-select" required>
+            <option value="" ${b.unit === "" ? "selected" : ""}>Choose the unit this material is from</option>
+            ${Array.from({ length: 16 }, (_, i) => `<option value="${i}" ${String(b.unit) === String(i) ? "selected" : ""}>Unit ${i}</option>`).join("")}
+          </select>
+          <p class="help">Keep each unit separate. If your material covers two units, make a test for each.</p>
+        </div>
         <div class="field">
           <div class="label-row"><label for="material">Study material</label><span class="help num" id="char-count">${b.material.length.toLocaleString()} characters</span></div>
           <textarea id="material" placeholder="Paste your study guide, notes or your teacher's review sheet here">${esc(b.material)}</textarea>
@@ -1002,7 +1050,7 @@
     return `
       ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: state.currentClass.name, action: "back-to-class" }, { label: "Review" }])}
       <div class="page-head">
-        <div class="eyebrow">Step 2 of 2</div>
+        <div class="eyebrow">Step 2 of 2 &middot; ${esc(unitLabel(b.unit === "" ? null : Number(b.unit)))}</div>
         <h1>Review before ${isAdmin() ? "publishing" : "sharing"}</h1>
         <p class="sub">Remove anything that looks wrong before your classmates see it.</p>
       </div>
@@ -1040,8 +1088,8 @@
     return `
       ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: state.currentClass.name, action: "back-to-class" }, { label: t.title }])}
       <div class="page-head">
-        <div class="eyebrow">${t.is_official ? `<span class="badge-official">${icon("check")}Official PrepBank</span>` : `<span class="badge-student">Student-made${author ? " &middot; shared by " + esc(author) : ""}</span>`}</div>
-        <h1>${esc(t.title)}</h1>
+        <div class="eyebrow">${esc(unitLabel(t.unit))} ${t.is_official ? `<span class="badge-official">${icon("check")}Official PrepBank</span>` : `<span class="badge-student">Student-made${author ? " &middot; shared by " + esc(author) : ""}</span>`}</div>
+        <div class="title-row"><h1>${esc(t.title)}</h1>${pinButton("test", t.id)}</div>
         <div class="stat-row">
           <span><span class="num">${mc}</span> multiple choice</span>
           <span><span class="num">${short}</span> short answer</span>
@@ -1232,6 +1280,7 @@
           <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; <span class="num">${t.question_count}</span> questions &middot; <span class="num">${(t.flashcards || []).length}</span> flashcards</div>
         </div>
         <div class="at-actions">
+          <select class="unit-mini" data-unit-for="${t.id}" aria-label="Unit">${[`<option value="">No unit</option>`].concat(Array.from({ length: 16 }, (_, i) => `<option value="${i}" ${t.unit === i ? "selected" : ""}>Unit ${i}</option>`)).join("")}</select>
           <button class="btn small" data-action="admin-toggle-official" data-id="${t.id}" data-official="${t.is_official}">${t.is_official ? "Remove Official" : "Make Official"}</button>
           <button class="btn small" data-action="admin-toggle-free" data-id="${t.id}" data-free="${t.is_free}">${t.is_free ? "Make PrepBank+" : "Make free"}</button>
           <button class="btn small danger" data-action="admin-delete-test" data-id="${t.id}">Delete</button>
@@ -1288,6 +1337,344 @@
   }
 
   // ---------------------------------------------------------------------
+  // Appearance, pins, My tests, leaderboard, settings
+  // ---------------------------------------------------------------------
+
+  const ACCENTS = [
+    { id: "scots", name: "Scots blue", color: "#1b3fa6" },
+    { id: "crimson", name: "Crimson", color: "#b42335" },
+    { id: "emerald", name: "Emerald", color: "#157a52" },
+    { id: "violet", name: "Violet", color: "#6b3fc4" },
+    { id: "teal", name: "Teal", color: "#0e7c86" },
+    { id: "gold", name: "Gold", color: "#a86c00" },
+  ];
+
+  function applyAppearance(p) {
+    const root = document.documentElement;
+    const theme = (p && p.theme) || "system";
+    const accent = (p && p.accent) || "scots";
+    if (theme === "system") delete root.dataset.theme; else root.dataset.theme = theme;
+    root.dataset.accent = accent;
+    try { localStorage.setItem("pb-appearance", JSON.stringify({ theme, accent })); } catch (e) { /* storage unavailable */ }
+  }
+  try { applyAppearance(JSON.parse(localStorage.getItem("pb-appearance") || "null")); } catch (e) { /* ignore */ }
+
+  function avatarHtml(p, size) {
+    const s = size || 30;
+    const name = (p && p.display_name) || "?";
+    if (p && p.avatar_url) return `<img class="avatar img" src="${esc(p.avatar_url)}" alt="" width="${s}" height="${s}" style="width:${s}px;height:${s}px" />`;
+    return `<span class="avatar" style="width:${s}px;height:${s}px;font-size:${Math.round(s * 0.38)}px">${esc(initials(name))}</span>`;
+  }
+
+  function unitLabel(u) {
+    return u === null || u === undefined || u < 0 ? "Other" : "Unit " + u;
+  }
+
+  function isFilterError(e) {
+    return /PB_FILTER/.test((e && (e.message || e)) || "");
+  }
+
+  // ---- Pins ----
+  async function loadPins() {
+    const { data } = await sb.from("pins")
+      .select("id, class_id, test_id, tests(id, title, class_id, unit, is_official, is_free, question_count, flashcards, created_by)")
+      .order("created_at", { ascending: false });
+    state.pins = data || [];
+    render();
+  }
+  function isPinned(kind, id) {
+    return state.pins.some((p) => (kind === "class" ? p.class_id : p.test_id) === id);
+  }
+  async function togglePin(kind, id) {
+    const col = kind === "class" ? "class_id" : "test_id";
+    const existing = state.pins.find((p) => p[col] === id);
+    if (existing) {
+      state.pins = state.pins.filter((p) => p !== existing);
+      render();
+      await sb.from("pins").delete().eq("id", existing.id);
+      setToast(kind === "class" ? "Class unpinned." : "Test unpinned.");
+    } else {
+      const { data, error } = await sb.from("pins").insert({ [col]: id })
+        .select("id, class_id, test_id, tests(id, title, class_id, unit, is_official, is_free, question_count, flashcards, created_by)").single();
+      if (error) { setToast("Couldn't pin that. Try again."); return; }
+      state.pins.unshift(data);
+      setToast(kind === "class" ? "Pinned to the top of Classes." : "Test pinned to the top of Classes.");
+    }
+  }
+  function pinButton(kind, id, compact) {
+    const on = isPinned(kind, id);
+    return `<button class="pin-btn ${on ? "on" : ""} ${compact ? "compact" : ""}" data-action="toggle-pin" data-kind="${kind}" data-id="${id}" aria-pressed="${on}" title="${on ? "Unpin" : "Pin"}">${icon("pin")}${compact ? "" : `<span>${on ? "Pinned" : "Pin"}</span>`}</button>`;
+  }
+
+  async function openTestById(testId, classId) {
+    const cls = state.classes.find((c) => c.id === classId);
+    if (!cls) return;
+    await openClass(cls);
+    const t = state.tests.find((x) => x.id === testId);
+    if (t) { state.currentTest = t; state.view = "test"; render(); }
+    else setToast("That test isn't available anymore.");
+  }
+
+  function pinnedSection() {
+    if (!state.pins.length) return "";
+    const classes = state.pins.filter((p) => p.class_id).map((p) => state.classes.find((c) => c.id === p.class_id)).filter(Boolean);
+    const tests = state.pins.filter((p) => p.test_id && p.tests).map((p) => p.tests);
+    return `<section class="pinned">
+      <div class="section-label">${icon("pin")}Pinned</div>
+      <div class="popular-grid">
+        ${classes.map((c) => `<button class="popular-card pinned-card" data-action="open-class" data-id="${c.id}">
+          <span class="pc-dept">${esc(c.subject)}</span><span class="pc-name">${esc(c.name)}</span>
+          <span class="pc-count">${(state.classCounts[c.id] || {}).test_count || 0} practice tests</span></button>`).join("")}
+        ${tests.map((t) => {
+          const c = state.classes.find((x) => x.id === t.class_id);
+          return `<button class="popular-card pinned-card test" data-action="open-pinned-test" data-id="${t.id}" data-class="${t.class_id}">
+            <span class="pc-dept">${esc(c ? c.name : "")} &middot; ${esc(unitLabel(t.unit))}</span><span class="pc-name">${esc(t.title)}</span>
+            <span class="pc-count">${t.is_official ? "Official" : "Student-made"} &middot; ${t.question_count} questions</span></button>`;
+        }).join("")}
+      </div>
+    </section>`;
+  }
+
+  // ---- My tests ----
+  async function loadMyTests() {
+    state.mine = { loaded: false, tests: [], stats: {}, me: null };
+    render();
+    const uid = state.profile.id;
+    const [{ data: tests }, { data: stats }, { data: me }] = await Promise.all([
+      sb.from("tests").select("*, classes(name, subject)").eq("created_by", uid).order("created_at", { ascending: false }),
+      sb.rpc("my_test_stats"),
+      sb.rpc("my_stats"),
+    ]);
+    state.mine = {
+      loaded: true,
+      tests: tests || [],
+      stats: Object.fromEntries((stats || []).map((s) => [s.test_id, s])),
+      me: (me && me[0]) || { points: 0, plays: 0, tests_published: 0, rank: null },
+    };
+    render();
+  }
+
+  function statTiles(me) {
+    const tile = (label, n, sub) => `<div class="stat"><span class="stat-num num">${n}</span><span class="stat-label">${label}</span>${sub ? `<span class="help">${sub}</span>` : ""}</div>`;
+    return `<div class="stats">
+      ${tile("Points", me.points || 0)}
+      ${tile("Leaderboard rank", me.rank ? "#" + me.rank : "&ndash;")}
+      ${tile("Tests published", me.tests_published || 0)}
+      ${tile("Times played by others", me.plays || 0)}
+    </div>`;
+  }
+
+  function myTestsView() {
+    const m = state.mine;
+    if (!m || !m.loaded) return skeletonRows();
+    const rows = m.tests.map((t) => {
+      const s = m.stats[t.id] || { players: 0, plays: 0, points: 0 };
+      return `<div class="admin-test ${t.is_official ? "official" : "student"}">
+        <div class="at-main">
+          <div class="test-badges">${t.is_official ? `<span class="badge-official">${icon("check")}Official</span>` : '<span class="badge-student">Student-made</span>'} ${t.is_free ? '<span class="badge-free">Free</span>' : `<span class="badge-plus">${icon("lock")}PrepBank+</span>`}</div>
+          <div class="tr-title">${esc(t.title)}</div>
+          <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; ${esc(unitLabel(t.unit))} &middot; <span class="num">${t.question_count}</span> questions</div>
+          ${t.is_official ? "" : `<div class="play-line"><span><span class="num">${s.players}</span> ${s.players == 1 ? "student" : "students"}</span><span><span class="num">${s.plays}</span> ${s.plays == 1 ? "play" : "plays"}</span><span class="pts"><span class="num">+${s.points}</span> ${s.points == 1 ? "point" : "points"}</span></div>`}
+        </div>
+        <div class="at-actions">
+          <button class="btn small" data-action="open-pinned-test" data-id="${t.id}" data-class="${t.class_id}">Open</button>
+          ${t.is_official ? "" : `<button class="btn small danger" data-action="delete-my-test" data-id="${t.id}">Delete</button>`}
+        </div>
+      </div>`;
+    }).join("");
+    return `
+      <div class="page-head">
+        <div class="eyebrow">Your contributions</div>
+        <h1>My tests</h1>
+        <p class="sub">Tests you've shared with your classes. You earn points every time other students practice them.</p>
+      </div>
+      ${statTiles(m.me)}
+      <div class="section-label">Published <span class="num">${m.tests.length}</span></div>
+      ${m.tests.length ? `<div class="card flush">${rows}</div>` : `<div class="empty-state">${icon("upload")}<h3>You haven't shared a test yet</h3><p>Open one of your classes and add your study guide. When classmates practice it, you'll start earning points.</p><button class="btn primary" data-action="nav-browse">Find your class</button></div>`}
+    `;
+  }
+
+  // ---- Leaderboard ----
+  async function loadLeaderboard() {
+    state.board = { loaded: false, rows: [], me: null };
+    render();
+    const [{ data: rows }, { data: me }] = await Promise.all([sb.rpc("leaderboard", { max_rows: 50 }), sb.rpc("my_stats")]);
+    state.board = { loaded: true, rows: rows || [], me: (me && me[0]) || null };
+    render();
+  }
+
+  function leaderboardView() {
+    const b = state.board;
+    if (!b || !b.loaded) return skeletonRows();
+    const uid = state.profile && state.profile.id;
+    const medal = (r) => (r === 1 ? "gold" : r === 2 ? "silver" : r === 3 ? "bronze" : "");
+    const rows = b.rows.map((r) => `
+      <div class="lb-row ${r.user_id === uid ? "me" : ""}">
+        <span class="lb-rank ${medal(Number(r.rank))}">${r.rank}</span>
+        ${avatarHtml(r, 36)}
+        <span class="lb-name"><span class="lb-top"><span class="lb-dn">${esc(r.display_name)}</span>${r.user_id === uid ? '<span class="you">You</span>' : ""}</span><span class="meta"><span class="num">${r.tests_published}</span> ${r.tests_published == 1 ? "test" : "tests"} &middot; <span class="num">${r.plays}</span> ${r.plays == 1 ? "play" : "plays"}</span></span>
+        <span class="lb-points"><span class="num">${r.points}</span> pts</span>
+      </div>`).join("");
+    return `
+      <div class="page-head">
+        <div class="eyebrow">Highland Park High School</div>
+        <h1>Leaderboard</h1>
+        <p class="sub">Students whose tests help the most classmates. You get 10 points each time a new student practices one of your tests, plus 1 point for each repeat (up to 4 per student). Official PrepBank tests don't count.</p>
+      </div>
+      ${b.me ? `<div class="card me-card">${avatarHtml(state.profile, 44)}<div><strong>${b.me.rank ? "You're #" + b.me.rank : "You're not ranked yet"}</strong><div class="help">${b.me.rank ? `<span class="num">${b.me.points}</span> points from <span class="num">${b.me.plays}</span> plays` : "Share a test in one of your classes to get on the board."}</div></div><button class="btn small" data-action="nav-mytests">My tests</button></div>` : ""}
+      ${b.rows.length ? `<div class="card flush lb">${rows}</div>` : `<div class="empty-state">${icon("trophy")}<h3>No one's on the board yet</h3><p>Be the first: share a study guide in one of your classes.</p></div>`}
+    `;
+  }
+
+  // ---- Settings ----
+  function settingsView() {
+    const p = state.profile || {};
+    const s = state.settingsUi || {};
+    const theme = p.theme || "system";
+    const accent = p.accent || "scots";
+    const plan = isAdmin() ? `<p><strong>Admin account.</strong> Every test is unlocked for you.</p>`
+      : isSubscribed() ? `<p><span class="badge-plus">${icon("spark")}PrepBank+</span> Every test in every class is unlocked.</p>
+          ${state.subscription.current_period_end ? `<p class="help">Renews on ${new Date(state.subscription.current_period_end).toLocaleDateString()}. $3.00 per month.</p>` : ""}
+          <button class="btn" data-action="manage-billing" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? '<span class="spinner"></span> Opening' : "Manage billing or cancel"}</button>`
+      : `<p><strong>Free plan.</strong> You can take every free test and share your own.</p>
+          <p class="help">PrepBank+ unlocks every test in every class for $3 a month. Cancel anytime.</p>
+          <button class="btn gold" data-action="start-checkout" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? '<span class="spinner"></span> Opening checkout' : "Get PrepBank+"}</button>`;
+    return `
+      <div class="page-head"><div class="eyebrow">Your account</div><h1>Settings</h1></div>
+      <div class="settings">
+        <section class="card settings-card">
+          <h2>Profile</h2>
+          <div class="avatar-row">
+            ${avatarHtml(p, 72)}
+            <div class="avatar-actions">
+              <label class="btn small" for="avatar-input">${icon("upload")}${s.avatarBusy ? "Uploading&hellip;" : "Upload photo"}</label>
+              <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
+              ${p.avatar_url ? `<button class="btn small ghost" data-action="remove-avatar">Remove</button>` : ""}
+              <p class="help">PNG, JPG or WebP. It's cropped to a square. Keep it school-appropriate.</p>
+            </div>
+          </div>
+          <form id="name-form" class="inline-form">
+            <div class="field"><label for="settings-name">Display name</label>
+              <input type="text" id="settings-name" name="name" maxlength="40" value="${esc(p.display_name || "")}" required /></div>
+            <button class="btn primary" type="submit">Save name</button>
+          </form>
+          ${s.nameError ? `<div class="error-box">${esc(s.nameError)}</div>` : ""}
+        </section>
+        <section class="card settings-card">
+          <h2>Appearance</h2>
+          <div class="field"><label>Theme</label>
+            <div class="seg">
+              ${["system", "light", "dark"].map((t) => `<button class="${theme === t ? "on" : ""}" data-action="set-theme" data-theme="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}
+            </div>
+            <p class="help">System follows your device's light or dark mode.</p>
+          </div>
+          <div class="field"><label>Accent color</label>
+            <div class="swatches">
+              ${ACCENTS.map((a) => `<button class="swatch ${accent === a.id ? "on" : ""}" data-action="set-accent" data-accent="${a.id}" style="--sw:${a.color}" aria-pressed="${accent === a.id}"><span></span>${a.name}</button>`).join("")}
+            </div>
+          </div>
+        </section>
+        <section class="card settings-card">
+          <h2>Billing</h2>
+          ${plan}
+        </section>
+        <section class="card settings-card">
+          <h2>Account</h2>
+          <p class="help">Signed in as <strong>${esc(state.session.user.email)}</strong></p>
+          <button class="btn danger" data-action="signout">${icon("logout")}Sign out</button>
+        </section>
+      </div>
+    `;
+  }
+
+  async function updateProfile(fields) {
+    const { data, error } = await sb.from("profiles").update(fields).eq("id", state.profile.id).select("*").single();
+    if (error) throw error;
+    state.profile = { ...state.profile, ...data };
+    return data;
+  }
+
+  async function saveDisplayName(name) {
+    state.settingsUi = { ...(state.settingsUi || {}), nameError: null };
+    const clean = name.trim();
+    if (!clean) { state.settingsUi.nameError = "Enter a name."; render(); return; }
+    try {
+      await updateProfile({ display_name: clean });
+      setToast("Name saved.");
+    } catch (e) {
+      state.settingsUi.nameError = isFilterError(e) ? "That name isn't allowed on PrepBank. Please choose another." : "Couldn't save your name. Try again.";
+      render();
+    }
+  }
+
+  async function setAppearance(fields) {
+    const before = { theme: state.profile.theme, accent: state.profile.accent };
+    state.profile = { ...state.profile, ...fields };
+    applyAppearance(state.profile);
+    render();
+    try { await updateProfile(fields); } catch (e) {
+      state.profile = { ...state.profile, ...before };
+      applyAppearance(state.profile); render();
+      setToast("Couldn't save that setting.");
+    }
+  }
+
+  // Crop to a centered square, shrink to 256px and re-encode (also strips photo metadata)
+  function resizeImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const size = 256, side = Math.min(img.width, img.height);
+        const canvas = document.createElement("canvas");
+        canvas.width = size; canvas.height = size;
+        canvas.getContext("2d").drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        URL.revokeObjectURL(url);
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Couldn't process that image."))), "image/jpeg", 0.86);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That file isn't an image we can read.")); };
+      img.src = url;
+    });
+  }
+
+  function avatarPath(url) {
+    const m = String(url || "").match(/\/avatars\/(.+)$/);
+    return m ? decodeURIComponent(m[1].split("?")[0]) : null;
+  }
+
+  async function uploadAvatar(file) {
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { setToast("Upload a PNG, JPG or WebP image."); return; }
+    if (file.size > 10 * 1024 * 1024) { setToast("That image is too large (10 MB max)."); return; }
+    state.settingsUi = { ...(state.settingsUi || {}), avatarBusy: true };
+    render();
+    try {
+      const blob = await resizeImage(file);
+      const path = `${state.profile.id}/avatar-${Date.now()}.jpg`;
+      const { error } = await sb.storage.from("avatars").upload(path, blob, { contentType: "image/jpeg", upsert: true });
+      if (error) throw error;
+      const { data } = sb.storage.from("avatars").getPublicUrl(path);
+      const old = avatarPath(state.profile.avatar_url);
+      await updateProfile({ avatar_url: data.publicUrl });
+      if (old) sb.storage.from("avatars").remove([old]);
+      setToast("Profile picture updated.");
+    } catch (e) {
+      setToast(e.message || "Upload failed.");
+    }
+    state.settingsUi.avatarBusy = false;
+    render();
+  }
+
+  async function removeAvatar() {
+    const old = avatarPath(state.profile.avatar_url);
+    try {
+      await updateProfile({ avatar_url: null });
+      if (old) await sb.storage.from("avatars").remove([old]);
+      setToast("Profile picture removed.");
+    } catch (e) { setToast("Couldn't remove it. Try again."); }
+    render();
+  }
+
+  // ---------------------------------------------------------------------
   // Event wiring
   // ---------------------------------------------------------------------
 
@@ -1321,6 +1708,8 @@
       state.classQuery = e.target.value;
       document.getElementById("class-results").innerHTML = classResults();
       document.getElementById("dept-rail").innerHTML = deptRail();
+      const extras = document.getElementById("browse-extras");
+      if (extras) extras.innerHTML = browseExtras();
     });
     const adminSearch = document.getElementById("admin-class-search");
     if (adminSearch) adminSearch.addEventListener("input", (e) => {
@@ -1330,12 +1719,24 @@
       const el = document.getElementById("admin-class-search");
       if (el) { el.focus(); el.setSelectionRange(pos, pos); }
     });
+    const unitEl = document.getElementById("unit-select");
+    if (unitEl) unitEl.addEventListener("change", (e) => { state.builder.unit = e.target.value; });
+    const avatarEl = document.getElementById("avatar-input");
+    if (avatarEl) avatarEl.addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; if (f) uploadAvatar(f); });
+    document.querySelectorAll("select[data-unit-for]").forEach((sel) => sel.addEventListener("change", async (e) => {
+      const id = e.target.dataset.unitFor, unit = e.target.value === "" ? null : Number(e.target.value);
+      const { error } = await sb.from("tests").update({ unit }).eq("id", id);
+      if (error) { setToast("Couldn't change the unit."); return; }
+      const t = state.admin.tests.find((x) => x.id === id); if (t) t.unit = unit;
+      setToast("Moved to " + unitLabel(unit) + ".");
+    }));
     const officialEl = document.getElementById("opt-official");
     if (officialEl) officialEl.addEventListener("change", (e) => { state.builder.official = e.target.checked; });
   }
 
   document.addEventListener("submit", (e) => {
     if (e.target.id === "auth-form") { e.preventDefault(); handleAuthSubmit(e.target); }
+    if (e.target.id === "name-form") { e.preventDefault(); saveDisplayName(e.target.name.value); }
     if (e.target.id === "admin-class-form") {
       e.preventDefault();
       const f = e.target;
@@ -1352,6 +1753,7 @@
   });
 
   document.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('[role="button"][data-action]')) { e.preventDefault(); e.target.click(); return; }
     if (state.view === "flashcards" && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
       const act = { " ": "flip-card", ArrowRight: "flash-next", ArrowLeft: "flash-prev" }[e.key];
       if (act) { e.preventDefault(); const b = document.querySelector(`[data-action="${act}"]`); if (b) b.click(); return; }
@@ -1373,6 +1775,23 @@
       case "auth-tab-signup": state.authMode = "signup"; state.authError = null; render(); break;
       case "filter-dept": state.classDept = el.dataset.dept; render(); break;
       case "filter-level": state.classLevel = el.dataset.level; render(); break;
+      case "filter-unit": state.classUnit = el.dataset.unit; render(); break;
+      case "toggle-pin": e.stopPropagation(); togglePin(el.dataset.kind, el.dataset.id); break;
+      case "open-pinned-test": openTestById(el.dataset.id, el.dataset.class); break;
+      case "nav-mytests": state.view = "mytests"; loadMyTests(); break;
+      case "nav-leaderboard": state.view = "leaderboard"; loadLeaderboard(); break;
+      case "nav-settings": state.view = "settings"; state.settingsUi = {}; render(); break;
+      case "set-theme": setAppearance({ theme: el.dataset.theme }); break;
+      case "set-accent": setAppearance({ accent: el.dataset.accent }); break;
+      case "remove-avatar": removeAvatar(); break;
+      case "delete-my-test": {
+        if (!confirm("Delete this test? Classmates won't be able to practice it anymore, and its points go away.")) break;
+        sb.from("tests").delete().eq("id", el.dataset.id).then(({ error }) => {
+          if (error) { setToast("Couldn't delete that test."); return; }
+          setToast("Test deleted."); loadMyTests(); loadClasses();
+        });
+        break;
+      }
       case "clear-filters": state.classQuery = ""; state.classDept = "All"; state.classLevel = "All levels"; render(); break;
       case "set-access": state.builder.access = el.dataset.access; render(); break;
       case "start-checkout": goToStripe("/api/checkout"); break;
