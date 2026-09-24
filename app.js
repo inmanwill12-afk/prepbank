@@ -37,6 +37,7 @@
     classCounts: {},
     classQuery: "",
     classDept: "All",
+    classLevel: "All levels",
     currentClass: null,
     tests: [],
     testsLoaded: false,
@@ -81,10 +82,20 @@
     }[c]));
   }
 
+  // Toasts live outside #app so re-renders don't restart their animation.
+  let toastTimer = null;
   function setToast(msg) {
     state.toast = msg;
     render();
-    if (msg) setTimeout(() => { if (state.toast === msg) { state.toast = null; render(); } }, 3500);
+    let el = document.getElementById("toast");
+    if (!el) { el = document.createElement("div"); el.id = "toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
+    if (!msg) { el.classList.remove("show"); return; }
+    el.textContent = msg;
+    el.classList.remove("show");
+    void el.offsetWidth; // restart the slide-in
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.classList.remove("show"); if (state.toast === msg) state.toast = null; }, 3800);
   }
 
   // ---------------------------------------------------------------------
@@ -428,6 +439,7 @@
       submitting: false, result: null,
     };
     state.view = "quiz";
+    lastProgress = 0;
     render();
     if (mode === "test") startTimer();
   }
@@ -587,27 +599,93 @@
   // Rendering
   // ---------------------------------------------------------------------
 
-  function render() {
-    const app = document.getElementById("app");
-    app.innerHTML = shell();
-    attachDynamicListeners();
+  // Small inline icon set (stroke icons, inherit currentColor)
+  const ICONS = {
+    search: '<path d="M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Zm10 2-4.35-4.35"/>',
+    chevron: '<path d="m9 6 6 6-6 6"/>',
+    back: '<path d="m15 6-6 6 6 6"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/>',
+    timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>',
+    cards: '<rect x="3" y="6" width="14" height="14" rx="2"/><path d="M7 2h12a2 2 0 0 1 2 2v12"/>',
+    spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
+    upload: '<path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+    shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/>',
+    logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H3"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/>',
+  };
+  function icon(name, cls) {
+    return `<svg class="icon ${cls || ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
   }
 
-  function shell() {
-    if (!state.session) return authScreen();
+  // Animation bookkeeping: only play entrance animations when the screen
+  // actually changes, not on every re-render.
+  let lastViewKey = null;
+  let lastModalOpen = false;
+  let lastFlashIndex = null;
+  let lastProgress = 0;
+
+  function viewKey() {
+    if (!state.session) return "auth-" + state.authMode;
+    return [state.view, state.currentClass && state.currentClass.id, state.currentTest && state.currentTest.id,
+      state.view === "quiz" && state.quiz ? state.quiz.index : "", state.view === "build" && state.builder.generated ? "preview" : ""].join("|");
+  }
+
+  function render() {
+    const app = document.getElementById("app");
+    const key = viewKey();
+    const entering = key !== lastViewKey;
+    lastViewKey = key;
+    app.innerHTML = shell(entering);
+    lastModalOpen = !!state.subscribeOpen;
+    attachDynamicListeners();
+    afterRender(entering);
+  }
+
+  function afterRender(entering) {
+    // Progress bar: start from the previous width so it slides forward
+    const bar = document.querySelector(".progressbar > div[data-to]");
+    if (bar) requestAnimationFrame(() => { bar.style.width = bar.dataset.to + "%"; lastProgress = Number(bar.dataset.to); });
+    // Score count-up on the results screen
+    const scoreEl = document.querySelector("[data-countup]");
+    if (scoreEl && entering) {
+      const target = Number(scoreEl.dataset.countup), total = scoreEl.dataset.total;
+      const start = performance.now(), dur = 900;
+      const tick = (now) => {
+        const t = Math.min(1, (now - start) / dur), eased = 1 - Math.pow(1 - t, 3);
+        scoreEl.textContent = Math.round(target * eased) + "/" + total;
+        if (t < 1) requestAnimationFrame(tick);
+      };
+      if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) requestAnimationFrame(tick);
+    }
+  }
+
+  function initials(name) {
+    return String(name || "?").trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+  }
+
+  function brandMark() {
+    return `<span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8"/><path d="M11 23V9h6.2a4.3 4.3 0 0 1 0 8.6H11" /></svg></span>`;
+  }
+
+  function shell(entering) {
+    if (!state.session) return authScreen(entering);
+    const name = state.profile ? state.profile.display_name : "";
+    const planLabel = isAdmin() ? "Admin" : hasPlus() ? "PrepBank+" : "Upgrade";
     const nav = `
-      <div class="topbar">
-        <a href="#" class="brand" data-action="nav-browse">PrepBank</a>
-        <nav>
-          <button data-action="nav-browse" class="${state.view === "browse" ? "active" : ""}">Browse classes</button>
-          ${state.profile && state.profile.is_admin ? `<button data-action="nav-admin" class="${state.view === "admin" ? "active" : ""}">Admin</button>` : ""}
+      <header class="topbar"><div class="topbar-inner">
+        <a href="#" class="brand" data-action="nav-browse">${brandMark()}<span>PrepBank</span></a>
+        <nav class="topnav">
+          <button data-action="nav-browse" class="${["browse", "class", "build", "test", "quiz", "review", "flashcards"].includes(state.view) ? "active" : ""}">Classes</button>
+          ${isAdmin() ? `<button data-action="nav-admin" class="${state.view === "admin" ? "active" : ""}">Admin</button>` : ""}
         </nav>
-        <span class="pill ${hasPlus() ? "gold" : ""}" data-action="open-subscribe" style="cursor:pointer">
-          ${isAdmin() ? "Admin &middot; PrepBank+" : hasPlus() ? "PrepBank+" : "Free plan &middot; Upgrade"}
-        </span>
-        <span class="pill">${esc(state.profile ? state.profile.display_name : "")}</span>
-        <button class="btn ghost small" data-action="signout">Sign out</button>
-      </div>`;
+        <div class="top-right">
+          <button class="plan-pill ${hasPlus() ? "plus" : ""}" data-action="open-subscribe">${hasPlus() ? icon("spark") : ""}${planLabel}</button>
+          <div class="user-chip" title="${esc(name)}"><span class="avatar">${esc(initials(name))}</span><span class="user-name">${esc(name)}</span></div>
+          <button class="btn ghost small signout" data-action="signout" aria-label="Sign out">${icon("logout")}<span>Sign out</span></button>
+        </div>
+      </div></header>`;
     let body = "";
     switch (state.view) {
       case "browse": body = browseView(); break;
@@ -618,132 +696,207 @@
       case "review": body = reviewView(); break;
       case "flashcards": body = flashcardsView(); break;
       case "admin": body = adminView(); break;
-      default: body = '<main><p>Loading&hellip;</p></main>';
+      default: body = skeletonRows();
     }
-    return `<div class="shell">${nav}<main>${body}</main>${footer()}</div>
-      ${state.toast ? `<div class="modal-backdrop" style="background:transparent;align-items:flex-end;justify-content:center;pointer-events:none">
-        <div class="card" style="pointer-events:auto;max-width:420px">${esc(state.toast)}</div></div>` : ""}
-      ${state.subscribeOpen ? subscribeModal() : ""}`;
+    const wide = state.view === "browse" || state.view === "admin";
+    return `<div class="shell">${nav}<main class="${wide ? "wide" : ""} ${entering ? "view-enter" : ""}">${body}</main>${footer()}</div>
+      ${state.subscribeOpen ? subscribeModal(!lastModalOpen) : ""}`;
+  }
+
+  function skeletonRows() {
+    return `<div class="skeleton-list">${Array.from({ length: 6 }, () => '<div class="skeleton"></div>').join("")}</div>`;
   }
 
   function footer() {
-    return `<footer class="small-print">PrepBank &middot; made by students, for students. Practice tests are AI-generated from material your classmates provide -- always double check against your actual class before an exam.</footer>`;
+    return `<footer class="site-footer"><div>${brandMark()} PrepBank</div><p>Made by students at Highland Park High School. Practice tests are AI-generated from material classmates share, so check anything important against your own notes before an exam.</p></footer>`;
   }
 
-  function authScreen() {
+  function authScreen(entering) {
     const signup = state.authMode === "signup";
-    return `<div class="shell">
-      <div class="topbar"><span class="brand">PrepBank</span></div>
-      <main>
-        <div class="hero">
-          <h1>Turn your study guide into a practice test.</h1>
-          <p class="lede">Paste or upload your class materials, PrepBank generates multiple-choice, short-answer, and flashcards -- shared with everyone else in your school taking the same class.</p>
-        </div>
-        <div class="card" style="max-width:420px">
-          <div class="tabs">
-            <button class="btn ${!signup ? "primary" : "ghost"}" data-action="auth-tab-signin">Sign in</button>
-            <button class="btn ${signup ? "primary" : "ghost"}" data-action="auth-tab-signup">Create account</button>
+    return `<div class="shell auth-shell">
+      <header class="topbar"><div class="topbar-inner"><span class="brand">${brandMark()}<span>PrepBank</span></span></div></header>
+      <main class="auth-main ${entering ? "view-enter" : ""}">
+        <section class="auth-hero">
+          <div class="eyebrow">Highland Park High School &middot; 2026&ndash;27</div>
+          <h1>Practice tests built from what your class is actually learning.</h1>
+          <p class="lede">Share your teacher's study guide once and PrepBank turns it into multiple choice, short answer and flashcards for everyone in that class.</p>
+          <ul class="auth-points">
+            <li>${icon("book")}<span><strong>95 HPHS courses</strong> from English I to AP Physics C</span></li>
+            <li>${icon("timer")}<span><strong>Timed test mode</strong> with AI-graded short answers</span></li>
+            <li>${icon("shield")}<span><strong>Official tests</strong> checked and published by PrepBank</span></li>
+          </ul>
+        </section>
+        <section class="card auth-card">
+          <div class="seg seg-full" role="tablist">
+            <button class="${!signup ? "on" : ""}" data-action="auth-tab-signin" role="tab">Sign in</button>
+            <button class="${signup ? "on" : ""}" data-action="auth-tab-signup" role="tab">Create account</button>
           </div>
+          <h2>${signup ? "Create your account" : "Welcome back"}</h2>
           ${state.authError ? `<div class="error-box">${esc(state.authError)}</div>` : ""}
           <form id="auth-form">
             ${signup ? `<div class="field"><label for="display_name">Your name</label><input type="text" id="display_name" name="display_name" placeholder="How classmates will see you" required /></div>` : ""}
-            <div class="field"><label for="email">School email</label><input type="email" id="email" name="email" required /></div>
-            <div class="field"><label for="password">Password</label><input type="password" id="password" name="password" minlength="6" required /></div>
-            <button class="btn primary block" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait&hellip;" : signup ? "Create account" : "Sign in"}</button>
+            <div class="field"><label for="email">School email</label><input type="email" id="email" name="email" autocomplete="email" required /></div>
+            <div class="field"><label for="password">Password</label><input type="password" id="password" name="password" minlength="6" autocomplete="${signup ? "new-password" : "current-password"}" required /></div>
+            <button class="btn primary block lg" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? '<span class="spinner"></span> Please wait' : signup ? "Create account" : "Sign in"}</button>
           </form>
-        </div>
+        </section>
       </main>
       ${footer()}
     </div>`;
   }
 
+  const LEVELS = ["All levels", "On-Level", "Honors", "AP", "Electives"];
+
   function levelTag(level) {
-    if (!level || level === "On-Level") return "";
-    const cls = level === "AP" || level === "Dual Credit" ? "level-ap" : level === "Honors" ? "level-honors" : "level-elective";
-    return `<span class="level ${cls}">${esc(level)}</span>`;
+    if (!level) return "";
+    const cls = level === "AP" || level === "Dual Credit" ? "level-ap" : level === "Honors" ? "level-honors" : level === "Elective" ? "level-elective" : "level-on";
+    return `<span class="level ${cls}">${esc(level === "On-Level" ? "On-level" : level)}</span>`;
   }
 
-  function filteredClasses() {
+  function filteredClasses(ignoreDept) {
     const q = state.classQuery.trim().toLowerCase();
     // Let "apush", "calc bc", "apwh" style searches still match
     const aliases = { apush: "united states history", apwh: "ap world history", apgov: "united states government", apes: "environmental science", aphug: "human geography", calc: "calcul", precalc: "pre-calculus", chem: "chem", bio: "biolog", gov: "government", us: "united states", csa: "computer science a", apcsp: "ap computer science principles", psych: "psycholog", econ: "econom", lang: "language", lit: "literature" };
     const terms = q.split(/\s+/).filter(Boolean).map((t) => aliases[t] || t);
+    const lvl = state.classLevel || "All levels";
     return state.classes.filter((c) => {
-      if (state.classDept !== "All" && c.subject !== state.classDept) return false;
+      if (!ignoreDept && state.classDept !== "All" && c.subject !== state.classDept) return false;
+      if (lvl === "AP" && !(c.level === "AP" || c.level === "Dual Credit")) return false;
+      if (lvl === "Electives" && c.level !== "Elective") return false;
+      if ((lvl === "On-Level" || lvl === "Honors") && c.level !== lvl) return false;
       const hay = `${c.name} ${c.subject} ${c.level || ""}`.toLowerCase();
       return terms.every((t) => hay.includes(t));
     });
   }
 
+  function classRow(c) {
+    const n = state.classCounts[c.id] || { test_count: 0, official_count: 0 };
+    return `<button class="class-row" data-action="open-class" data-id="${c.id}">
+      <span class="class-name">${esc(c.name)}</span>
+      <span class="class-level">${levelTag(c.level)}</span>
+      <span class="class-tests ${n.test_count ? "has" : ""}">${n.official_count ? `<span class="dot-official" title="Has official tests">${icon("check")}</span>` : ""}<span class="num">${n.test_count}</span> ${n.test_count === 1 ? "test" : "tests"}</span>
+      ${icon("chevron", "row-chevron")}
+    </button>`;
+  }
+
   function classResults() {
     const list = filteredClasses();
     if (list.length === 0) {
-      return `<div class="card"><p>No classes match "${esc(state.classQuery)}". Every HPHS course is already listed -- try a shorter search like "chem" or "AP".</p></div>`;
+      return `<div class="empty-state">${icon("search")}<h3>No classes match "${esc(state.classQuery)}"</h3><p>Every HPHS course is already listed. Try a shorter search like "chem" or "AP", or clear the filters.</p><button class="btn small" data-action="clear-filters">Clear search and filters</button></div>`;
     }
     const groups = {};
     list.forEach((c) => { (groups[c.subject] = groups[c.subject] || []).push(c); });
     return Object.entries(groups).map(([dept, classes]) => `
-      <h3 class="dept-heading">${esc(dept)} <span class="meta">${classes.length}</span></h3>
-      <div class="grid cols-3">
-        ${classes.map((c) => {
-          const n = state.classCounts[c.id] || { test_count: 0, official_count: 0 };
-          return `<div class="card class-card" data-action="open-class" data-id="${c.id}">
-            <div class="class-card-top">${levelTag(c.level)}${n.official_count ? '<span class="badge-official small">&#10003; Official</span>' : ""}</div>
-            <h3>${esc(c.name)}</h3>
-            <div class="meta">${n.test_count ? `${n.test_count} practice test${n.test_count === 1 ? "" : "s"}` : "No tests yet &middot; be the first"}</div>
-          </div>`;
-        }).join("")}
-      </div>`).join("");
+      <section class="catalog-group">
+        <header class="catalog-head"><h3>${esc(dept)}</h3><span class="count">${classes.length} ${classes.length === 1 ? "course" : "courses"}</span></header>
+        <div class="catalog-list">${classes.map(classRow).join("")}</div>
+      </section>`).join("");
+  }
+
+  function deptCounts() {
+    const base = filteredClasses(true);
+    const counts = { All: base.length };
+    base.forEach((c) => { counts[c.subject] = (counts[c.subject] || 0) + 1; });
+    return counts;
+  }
+
+  function deptRail() {
+    const counts = deptCounts();
+    return DEPARTMENTS.map((d) => `<button class="dept-item ${state.classDept === d ? "on" : ""}" data-action="filter-dept" data-dept="${esc(d)}">
+      <span>${d === "All" ? "All departments" : esc(d)}</span><span class="num">${counts[d] || 0}</span></button>`).join("");
   }
 
   function browseView() {
-    if (!state.classesLoaded) return "<p>Loading classes&hellip;</p>";
+    if (!state.classesLoaded) return skeletonRows();
+    const popular = state.classes
+      .filter((c) => (state.classCounts[c.id] || {}).test_count)
+      .sort((a, b) => state.classCounts[b.id].test_count - state.classCounts[a.id].test_count)
+      .slice(0, 4);
+    const filtering = state.classQuery || state.classDept !== "All" || (state.classLevel && state.classLevel !== "All levels");
     return `
-      <div class="browse-head">
-        <h2 style="margin:0">Find your class</h2>
-        <p class="help" style="margin:.2rem 0 0">Every Highland Park High School course that needs studying. Pick yours to practice -- or add your study guide so everyone in the class can use it.</p>
+      <div class="page-head">
+        <div class="eyebrow">Highland Park High School &middot; Course catalog</div>
+        <h1>Find your class</h1>
+        <p class="sub">${state.classes.length} courses that involve real studying. Open yours to practice, or add your study guide so everyone in the class can use it.</p>
       </div>
-      <input type="text" id="class-search" class="search" placeholder="Search classes -- try &quot;AP Bio&quot;, &quot;Chemistry Honors&quot;, &quot;Spanish III&quot;" value="${esc(state.classQuery)}" autocomplete="off" />
-      <div class="chips">
-        ${DEPARTMENTS.map((d) => `<button class="chip ${state.classDept === d ? "on" : ""}" data-action="filter-dept" data-dept="${esc(d)}">${esc(d)}</button>`).join("")}
+      ${popular.length && !filtering ? `
+        <section class="popular">
+          <div class="section-label">Most practiced right now</div>
+          <div class="popular-grid">
+            ${popular.map((c) => `<button class="popular-card" data-action="open-class" data-id="${c.id}">
+              <span class="pc-dept">${esc(c.subject)}</span>
+              <span class="pc-name">${esc(c.name)}</span>
+              <span class="pc-count"><span class="num">${state.classCounts[c.id].test_count}</span> practice tests</span>
+            </button>`).join("")}
+          </div>
+        </section>` : ""}
+      <div class="catalog">
+        <aside class="dept-rail" id="dept-rail" aria-label="Departments">${deptRail()}</aside>
+        <div class="catalog-main">
+          <div class="catalog-tools">
+            <label class="searchbox" for="class-search">${icon("search")}
+              <input type="text" id="class-search" placeholder="Search courses, e.g. AP Bio, Chem Honors, APUSH" value="${esc(state.classQuery)}" autocomplete="off" />
+              <kbd>/</kbd>
+            </label>
+            <div class="seg level-seg" role="tablist" aria-label="Course level">
+              ${LEVELS.map((l) => `<button class="${(state.classLevel || "All levels") === l ? "on" : ""}" data-action="filter-level" data-level="${esc(l)}">${esc(l)}</button>`).join("")}
+            </div>
+          </div>
+          <div id="class-results">${classResults()}</div>
+        </div>
       </div>
-      <div id="class-results">${classResults()}</div>
     `;
+  }
+
+  function crumbs(parts) {
+    return `<nav class="crumbs" aria-label="Breadcrumb">${parts.map((p, i) => i < parts.length - 1
+      ? `<button data-action="${p.action}">${i === 0 ? icon("back") : ""}${esc(p.label)}</button><span class="sep">/</span>`
+      : `<span class="current">${esc(p.label)}</span>`).join("")}</nav>`;
+  }
+
+  function testRow(t) {
+    const locked = testIsLocked(t);
+    const author = t.profiles && t.profiles.display_name;
+    const fc = (t.flashcards || []).length;
+    return `<button class="test-row ${t.is_official ? "official" : "student"} ${locked ? "locked" : ""}" data-action="open-test" data-id="${t.id}">
+      <span class="tr-main">
+        <span class="test-badges">
+          ${t.is_official ? `<span class="badge-official">${icon("check")}Official</span>` : '<span class="badge-student">Student-made</span>'}
+          ${t.is_free ? '<span class="badge-free">Free</span>' : ""}
+        </span>
+        <span class="tr-title">${esc(t.title)}</span>
+        <span class="meta"><span class="num">${t.question_count}</span> questions${fc ? ` &middot; <span class="num">${fc}</span> flashcards` : ""}${!t.is_official && author ? ` &middot; shared by ${esc(author)}` : ""}</span>
+      </span>
+      ${locked ? `<span class="lock">${icon("lock")}PrepBank+</span>` : `<span class="tr-open">Open${icon("chevron")}</span>`}
+    </button>`;
   }
 
   function classView() {
     const c = state.currentClass;
     if (!c) return "";
-    const row = (t) => {
-      const locked = testIsLocked(t);
-      const author = t.profiles && t.profiles.display_name;
-      return `<div class="card test-row ${t.is_official ? "official" : "student"}" data-action="open-test" data-id="${t.id}">
-        <div>
-          <div class="test-badges">
-            ${t.is_official ? '<span class="badge-official">&#10003; Official PrepBank</span>' : '<span class="badge-student">Student-made</span>'}
-            ${t.is_free ? '<span class="tag">Free</span>' : ""}
-          </div>
-          <strong>${esc(t.title)}</strong>
-          <div class="meta">${t.question_count} question${t.question_count === 1 ? "" : "s"}${(t.flashcards || []).length ? ` &middot; ${t.flashcards.length} flashcards` : ""}${!t.is_official && author ? ` &middot; shared by ${esc(author)}` : ""}</div>
-        </div>
-        ${locked ? `<span class="lock">&#128274; PrepBank+</span>` : `<span class="btn small">Open &rarr;</span>`}
-      </div>`;
-    };
     const official = state.tests.filter((t) => t.is_official);
     const student = state.tests.filter((t) => !t.is_official);
-    const addLabel = isAdmin() ? "+ Publish an official test" : "+ Add your study guide";
+    const addLabel = isAdmin() ? "Publish an official test" : "Add your study guide";
+    let body;
+    if (!state.testsLoaded) body = skeletonRows();
+    else if (state.tests.length === 0) body = `<div class="empty-state">${icon("upload")}
+        <h3>No practice tests for ${esc(c.name)} yet</h3>
+        <p>Add your study guide, notes or review sheet and PrepBank turns it into the first practice test for this class. The first one is free for everyone.</p>
+        <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${icon("upload")}${addLabel}</button></div>`;
+    else body = `
+        ${official.length ? `<section class="test-group"><div class="section-label">Official tests <span class="num">${official.length}</span></div><div class="stagger">${official.map(testRow).join("")}</div></section>` : ""}
+        ${student.length ? `<section class="test-group"><div class="section-label">From your classmates <span class="num">${student.length}</span></div><div class="stagger">${student.map(testRow).join("")}</div></section>` : ""}`;
     return `
-      <button class="btn ghost small" data-action="nav-browse">&larr; All classes</button>
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:0.5rem 0 1rem">
+      ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: c.subject, action: "nav-browse" }, { label: c.name }])}
+      <div class="page-head row">
         <div>
-          <span class="tag">${esc(c.subject)}</span> ${levelTag(c.level)}
-          <h2 style="margin:.3rem 0 0">${esc(c.name)}</h2>
+          <div class="eyebrow">${esc(c.subject)} ${levelTag(c.level)}</div>
+          <h1>${esc(c.name)}</h1>
+          <p class="sub">${state.testsLoaded ? `<span class="num">${state.tests.length}</span> practice ${state.tests.length === 1 ? "test" : "tests"}${official.length ? ` &middot; <span class="num">${official.length}</span> official` : ""}` : "&nbsp;"}</p>
         </div>
-        <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${addLabel}</button>
+        <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${icon("upload")}${addLabel}</button>
       </div>
-      ${!state.testsLoaded ? "<p>Loading tests&hellip;</p>" : state.tests.length === 0 ? `<div class="card"><p>No practice tests for this class yet. Add your study guide, notes or review sheet and PrepBank will turn it into the first practice test -- free for everyone in ${esc(c.name)}.</p></div>` : `
-        ${official.length ? `<h3 class="section-label">Official tests</h3>${official.map(row).join("")}` : ""}
-        ${student.length ? `<h3 class="section-label">From your classmates</h3>${student.map(row).join("")}` : ""}`}
+      ${body}
     `;
   }
 
@@ -751,97 +904,101 @@
     const b = state.builder;
     if (b.generated) return buildPreview();
     const admin = isAdmin();
+    const c = state.currentClass;
     const header = admin ? `
-      <div class="admin-banner">
-        <div><span class="badge-official">&#10003; Official PrepBank</span> <strong>Publishing as admin</strong></div>
-        <div class="help" style="margin:0">Official tests are pinned to the top of ${esc(state.currentClass.name)} with a checkmark, and you decide whether they're free or PrepBank+.</div>
+      <div class="page-head">
+        <div class="eyebrow"><span class="badge-official">${icon("check")}Official</span> Publishing as admin</div>
+        <h1>Publish an official test</h1>
+        <p class="sub">Official tests are pinned to the top of ${esc(c.name)} with a checkmark. You choose whether they're free or PrepBank+.</p>
       </div>
-      <h2>Publish an official test</h2>
-      <div class="card admin-options">
-        <label class="check-row"><input type="checkbox" id="opt-official" ${b.official ? "checked" : ""} /> Mark as <strong>Official PrepBank</strong> test</label>
-        <div class="field" style="margin:.8rem 0 0">
-          <label>Who can take it?</label>
+      <div class="card option-card">
+        <label class="switch-row" for="opt-official">
+          <span><strong>Official PrepBank test</strong><span class="help">Shows the checkmark badge and pins it to the top</span></span>
+          <input type="checkbox" id="opt-official" class="switch" ${b.official ? "checked" : ""} />
+        </label>
+        <div class="option-divider"></div>
+        <div class="option-row">
+          <span><strong>Who can take it</strong></span>
           <div class="seg">
             <button class="${b.access === "free" ? "on" : ""}" data-action="set-access" data-access="free">Free for everyone</button>
-            <button class="${b.access === "plus" ? "on" : ""}" data-action="set-access" data-access="plus">&#128274; PrepBank+ only</button>
+            <button class="${b.access === "plus" ? "on" : ""}" data-action="set-access" data-access="plus">${icon("lock")}PrepBank+ only</button>
           </div>
         </div>
       </div>` : `
-      <h2>Add your study guide</h2>
-      <p class="help">Share what your teacher gave you -- a review sheet, notes, or a study guide -- and PrepBank turns it into practice questions and flashcards for everyone in ${esc(state.currentClass.name)}.</p>
-      <div class="note-box student-note">
-        <strong>Your test will show as "Student-made" and credit you by name.</strong>
-        Only share material from this class. No actual tests, quizzes or answer keys -- that's cheating and admins will remove it.
-        ${state.tests.length === 0 ? "<br />Since this is the first test in this class, it'll be free for everyone." : ""}
+      <div class="page-head">
+        <div class="eyebrow">${esc(c.name)}</div>
+        <h1>Add your study guide</h1>
+        <p class="sub">Share what your teacher gave you (a review sheet, notes or a study guide) and PrepBank turns it into practice questions and flashcards for everyone in the class.</p>
+      </div>
+      <div class="notice">
+        ${icon("users")}
+        <div><strong>Your test will be labeled Student-made and credit you by name.</strong>
+        Only share material from this class. Don't upload real tests, quizzes or answer keys; admins remove them.
+        ${state.tests.length === 0 ? " Since this is the first test in the class, it'll be free for everyone." : ""}</div>
       </div>`;
     return `
-      <button class="btn ghost small" data-action="back-to-class">&larr; ${esc(state.currentClass.name)}</button>
+      ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: c.name, action: "back-to-class" }, { label: admin ? "Publish" : "Add study guide" }])}
       ${header}
       ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
-      <div class="card ${admin ? "admin-card" : ""}">
+      <div class="card builder-card ${admin ? "admin-card" : ""} ${b.busy ? "is-busy" : ""}">
         <div class="field">
-          <label for="material">Study material</label>
-          <textarea id="material" placeholder="Paste your study guide, notes, or teacher's review sheet here...">${esc(b.material)}</textarea>
-          <div class="help">${b.material.length.toLocaleString()} characters</div>
+          <div class="label-row"><label for="material">Study material</label><span class="help num" id="char-count">${b.material.length.toLocaleString()} characters</span></div>
+          <textarea id="material" placeholder="Paste your study guide, notes or your teacher's review sheet here">${esc(b.material)}</textarea>
         </div>
-        <div class="field">
-          <label for="file-upload">Or upload a file</label>
+        <label class="dropzone" for="file-upload">
+          ${icon("upload")}
+          <span><strong>Upload a file</strong> or drag it here</span>
+          <span class="help">.txt or .pdf with selectable text (not a scanned photo)</span>
           <input type="file" id="file-upload" accept=".txt,.pdf,text/plain,application/pdf" />
-          <div class="help">.txt or .pdf (PDF must have selectable text, not a scanned photo).</div>
-        </div>
+        </label>
         <div class="count-inputs">
           <div class="field"><label for="count-mc">Multiple choice</label><input type="number" id="count-mc" min="0" max="25" value="${b.counts.mc}" /></div>
           <div class="field"><label for="count-short">Short answer</label><input type="number" id="count-short" min="0" max="25" value="${b.counts.short}" /></div>
           <div class="field"><label for="count-flash">Flashcards</label><input type="number" id="count-flash" min="0" max="40" value="${b.counts.flashcards}" /></div>
         </div>
-        <button class="btn ${admin ? "primary" : "gold"}" data-action="generate-test" ${b.busy ? "disabled" : ""}>${b.busy ? "Generating&hellip; (this can take up to a minute)" : admin ? "Generate official test" : "Generate practice test"}</button>
+        <div class="builder-actions">
+          <button class="btn ${admin ? "primary" : "gold"} lg" data-action="generate-test" ${b.busy ? "disabled" : ""}>${b.busy ? '<span class="spinner"></span> Writing questions&hellip;' : `${icon("spark")}${admin ? "Generate official test" : "Generate practice test"}`}</button>
+          ${b.busy ? '<span class="help">This usually takes 15 to 40 seconds.</span>' : ""}
+        </div>
+        ${b.busy ? '<div class="busy-bar"><div></div></div>' : ""}
       </div>
-      ${admin ? `<p class="help">Tip: you can also send your study material to Claude in chat and paste the result into Admin &rarr; Import.</p>` : ""}
+      ${admin ? `<p class="help tip">Tip: you can also send study material to Claude in chat and paste the result into Admin &rarr; Import.</p>` : ""}
     `;
   }
 
   function buildPreview() {
     const b = state.builder;
     const g = b.generated;
-    const mcHtml = g.mc.map((q, i) => `
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;gap:1rem">
-          <strong>MC ${i + 1}. ${esc(q.prompt)}</strong>
-          <button class="btn ghost small" data-action="remove-generated" data-kind="mc" data-idx="${i}">Remove</button>
-        </div>
-        <ol type="A" style="margin:.6rem 0 0;padding-left:1.4rem">
-          ${(q.choices || []).map((c, ci) => `<li style="${ci === q.correctIndex ? "color:var(--good);font-weight:600" : ""}">${esc(c)}</li>`).join("")}
-        </ol>
-      </div>`).join("");
-    const shortHtml = g.short.map((q, i) => `
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;gap:1rem">
-          <strong>Short answer ${i + 1}. ${esc(q.prompt)}</strong>
-          <button class="btn ghost small" data-action="remove-generated" data-kind="short" data-idx="${i}">Remove</button>
-        </div>
-        <div class="help">Expected: ${esc(q.answer)}</div>
-      </div>`).join("");
-    const flashHtml = g.flashcards.map((f, i) => `
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;gap:1rem">
-          <strong>${esc(f.term)}</strong>
-          <button class="btn ghost small" data-action="remove-generated" data-kind="flashcards" data-idx="${i}">Remove</button>
-        </div>
-        <div class="help">${esc(f.definition)}</div>
-      </div>`).join("");
+    const item = (kind, i, title, body) => `
+      <div class="preview-item">
+        <div class="pi-head"><span class="pi-title">${title}</span>
+          <button class="btn ghost small" data-action="remove-generated" data-kind="${kind}" data-idx="${i}">Remove</button></div>
+        ${body}
+      </div>`;
+    const mcHtml = g.mc.map((q, i) => item("mc", i, `<span class="num">${i + 1}.</span> ${esc(q.prompt)}`,
+      `<ol class="pi-choices">${(q.choices || []).map((c, ci) => `<li class="${ci === q.correctIndex ? "correct" : ""}"><span class="choice-letter">${"ABCD"[ci] || ""}</span>${esc(c)}</li>`).join("")}</ol>`)).join("");
+    const shortHtml = g.short.map((q, i) => item("short", i, `<span class="num">${i + 1}.</span> ${esc(q.prompt)}`,
+      `<div class="help"><strong>Expected:</strong> ${esc(q.answer)}</div>`)).join("");
+    const flashHtml = g.flashcards.map((f, i) => item("flashcards", i, esc(f.term), `<div class="help">${esc(f.definition)}</div>`)).join("");
     return `
-      <button class="btn ghost small" data-action="discard-generated">&larr; Start over</button>
-      <h2>Review before saving</h2>
-      <p class="help">Skim these for anything off before your classmates see them -- remove any question that doesn't look right.</p>
-      ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
-      <div class="card">
-        <div class="field"><label for="test-title">Test title</label><input type="text" id="test-title" placeholder="e.g. Unit 3 -- Cell Energy" value="${esc(state.currentClass.name + " Practice Test")}" /></div>
-        ${isAdmin() ? `<p class="help" style="margin-top:0">Publishing as ${b.official ? "<strong>&#10003; Official</strong>" : "a regular test"} &middot; ${b.access === "free" ? "Free for everyone" : "PrepBank+ only"}</p>` : ""}
-        <button class="btn primary" data-action="save-test" ${b.saving ? "disabled" : ""}>${b.saving ? "Saving&hellip;" : isAdmin() ? "Publish to class" : "Share with my class"}</button>
+      ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: state.currentClass.name, action: "back-to-class" }, { label: "Review" }])}
+      <div class="page-head">
+        <div class="eyebrow">Step 2 of 2</div>
+        <h1>Review before ${isAdmin() ? "publishing" : "sharing"}</h1>
+        <p class="sub">Remove anything that looks wrong before your classmates see it.</p>
       </div>
-      ${g.mc.length ? `<h3 style="margin-top:1.5rem">Multiple choice (${g.mc.length})</h3>${mcHtml}` : ""}
-      ${g.short.length ? `<h3 style="margin-top:1.5rem">Short answer (${g.short.length})</h3>${shortHtml}` : ""}
-      ${g.flashcards.length ? `<h3 style="margin-top:1.5rem">Flashcards (${g.flashcards.length})</h3>${flashHtml}` : ""}
+      ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
+      <div class="card save-card">
+        <div class="field"><label for="test-title">Test title</label><input type="text" id="test-title" placeholder="e.g. Unit 3: Cellular Energetics" value="${esc(state.currentClass.name + " Practice Test")}" /></div>
+        ${isAdmin() ? `<p class="help">Publishing as ${b.official ? "<strong>Official</strong>" : "a regular test"} &middot; ${b.access === "free" ? "Free for everyone" : "PrepBank+ only"}</p>` : ""}
+        <div class="builder-actions">
+          <button class="btn primary lg" data-action="save-test" ${b.saving ? "disabled" : ""}>${b.saving ? '<span class="spinner"></span> Saving' : isAdmin() ? "Publish to class" : "Share with my class"}</button>
+          <button class="btn ghost" data-action="discard-generated">Start over</button>
+        </div>
+      </div>
+      ${g.mc.length ? `<section class="preview-group"><div class="section-label">Multiple choice <span class="num">${g.mc.length}</span></div><div class="card flush">${mcHtml}</div></section>` : ""}
+      ${g.short.length ? `<section class="preview-group"><div class="section-label">Short answer <span class="num">${g.short.length}</span></div><div class="card flush">${shortHtml}</div></section>` : ""}
+      ${g.flashcards.length ? `<section class="preview-group"><div class="section-label">Flashcards <span class="num">${g.flashcards.length}</span></div><div class="card flush">${flashHtml}</div></section>` : ""}
     `;
   }
 
@@ -851,33 +1008,38 @@
     const locked = testIsLocked(t);
     const mc = (t.questions || []).filter((q) => q.type === "mc").length;
     const short = (t.questions || []).filter((q) => q.type === "short").length;
+    const fc = (t.flashcards || []).length;
+    const minutes = Math.max(2, Math.round((mc * 40 + short * 70) / 60));
+    const author = t.profiles && t.profiles.display_name;
+    const mode = (action, ic, title, desc, meta, primary) => `
+      <button class="mode-card ${primary ? "primary" : ""}" data-action="${action}">
+        <span class="mode-icon">${icon(ic)}</span>
+        <span class="mode-title">${title}</span>
+        <span class="mode-desc">${desc}</span>
+        <span class="mode-meta"><span>${meta}</span>${icon("chevron")}</span>
+      </button>`;
     return `
-      <button class="btn ghost small" data-action="back-to-class">&larr; ${esc(state.currentClass.name)}</button>
-      <div class="test-badges" style="margin-top:.6rem">${t.is_official ? '<span class="badge-official">&#10003; Official PrepBank</span>' : `<span class="badge-student">Student-made${t.profiles && t.profiles.display_name ? " &middot; shared by " + esc(t.profiles.display_name) : ""}</span>`}</div>
-      <h2>${esc(t.title)}</h2>
-      <p class="meta">${mc} multiple choice &middot; ${short} short answer &middot; ${(t.flashcards || []).length} flashcards</p>
-      ${!t.is_official ? `<p class="help">Made from a classmate's study material -- double-check anything that looks off against your notes.</p>` : ""}
+      ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: state.currentClass.name, action: "back-to-class" }, { label: t.title }])}
+      <div class="page-head">
+        <div class="eyebrow">${t.is_official ? `<span class="badge-official">${icon("check")}Official PrepBank</span>` : `<span class="badge-student">Student-made${author ? " &middot; shared by " + esc(author) : ""}</span>`}</div>
+        <h1>${esc(t.title)}</h1>
+        <div class="stat-row">
+          <span><span class="num">${mc}</span> multiple choice</span>
+          <span><span class="num">${short}</span> short answer</span>
+          <span><span class="num">${fc}</span> flashcards</span>
+        </div>
+        ${!t.is_official ? `<p class="help">Made from a classmate's study material. Double-check anything that looks off against your notes.</p>` : ""}
+      </div>
       ${locked ? `
-        <div class="card">
-          <p><strong>This test is part of PrepBank+.</strong> Unlock it (and every other test your school has added) to practice here.</p>
+        <div class="card locked-card">
+          <span class="mode-icon gold">${icon("lock")}</span>
+          <div><h3>This test is part of PrepBank+</h3><p class="help">Unlock it and every other test in every HPHS class for $3 a month.</p></div>
           <button class="btn gold" data-action="open-subscribe">Unlock PrepBank+</button>
         </div>` : `
-        <div class="grid cols-2">
-          <div class="card">
-            <h3>Study mode</h3>
-            <p class="help">Go at your own pace. See the right answer and explanation right after each question -- no timer, no score pressure.</p>
-            <button class="btn primary block" data-action="start-study">Practice (untimed)</button>
-          </div>
-          <div class="card">
-            <h3>Test mode</h3>
-            <p class="help">Timed, like the real thing. Answers are hidden until you finish, then you get a score and a full review.</p>
-            <button class="btn primary block" data-action="start-test-mode">Take the test (timed)</button>
-          </div>
-          ${(t.flashcards || []).length ? `<div class="card">
-            <h3>Flashcards</h3>
-            <p class="help">${t.flashcards.length} term/definition cards to flip through and drill.</p>
-            <button class="btn block" data-action="start-flashcards">Study flashcards</button>
-          </div>` : ""}
+        <div class="mode-grid stagger">
+          ${mc + short ? mode("start-study", "book", "Study mode", "Go at your own pace and see the answer and explanation after each question.", "Untimed", true) : ""}
+          ${mc + short ? mode("start-test-mode", "timer", "Test mode", "Timed like the real thing. Answers stay hidden until you submit.", `About <span class="num">${minutes}</span> min`) : ""}
+          ${fc ? mode("start-flashcards", "cards", "Flashcards", "Flip through terms and definitions and track what you know.", `<span class="num">${fc}</span> cards`) : ""}
         </div>`}
     `;
   }
@@ -892,44 +1054,48 @@
 
     let body = "";
     if (question.type === "mc") {
-      body = (question.choices || []).map((c, i) => {
+      body = `<div class="choices">${(question.choices || []).map((c, i) => {
         let cls = "choice";
         if (String(given) === String(i)) cls += " selected";
         if (revealed) {
           if (i === question.correctIndex) cls += " correct";
           else if (String(given) === String(i)) cls += " incorrect";
         }
-        return `<div class="${cls}" data-action="select-choice" data-idx="${i}">
-          <input type="radio" ${String(given) === String(i) ? "checked" : ""} readonly />
-          <span>${esc(c)}</span>
-        </div>`;
-      }).join("");
+        return `<button class="${cls}" data-action="select-choice" data-idx="${i}" ${revealed ? "disabled" : ""}>
+          <span class="choice-letter">${"ABCDEF"[i]}</span>
+          <span class="choice-text">${esc(c)}</span>
+          ${revealed && i === question.correctIndex ? icon("check", "choice-mark") : ""}
+        </button>`;
+      }).join("")}</div>`;
     } else {
-      body = `<textarea id="short-answer-input" placeholder="Type your answer&hellip;" style="min-height:100px">${esc(given || "")}</textarea>`;
+      body = `<textarea id="short-answer-input" class="answer-box" placeholder="Type your answer">${esc(given || "")}</textarea>`;
     }
 
     const showCheck = q.mode === "study" && !revealed;
+    const right = question.type === "mc" && String(given) === String(question.correctIndex);
     const feedback = q.mode === "study" && revealed ? `
-      <div class="note-box" style="margin-top:1rem">
-        ${question.type === "mc" ? (String(given) === String(question.correctIndex) ? '<strong style="color:var(--good)">Correct.</strong> ' : '<strong style="color:var(--bad)">Not quite.</strong> ') + esc(question.explanation || "") : `<strong>Expected answer:</strong> ${esc(question.answer)}`}
+      <div class="feedback ${question.type === "mc" ? (right ? "good" : "bad") : "neutral"}">
+        ${question.type === "mc" ? `<strong>${right ? "Correct." : "Not quite."}</strong> ${esc(question.explanation || "")}` : `<strong>Expected answer:</strong> ${esc(question.answer)}`}
       </div>` : "";
 
     return `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem">
-        <span class="meta">Question ${q.index + 1} of ${q.questions.length} &middot; ${q.mode === "test" ? "Test mode" : "Study mode"}</span>
-        ${q.mode === "test" ? `<span id="quiz-timer" class="timer ${q.remainingSec <= 30 ? "low" : ""}">${formatTime(q.remainingSec)}</span>` : ""}
+      <div class="quiz-top">
+        <button class="btn ghost small" data-action="close-review">${icon("back")}Exit</button>
+        <span class="meta">Question <span class="num">${q.index + 1}</span> of <span class="num">${q.questions.length}</span> &middot; ${q.mode === "test" ? "Test mode" : "Study mode"}</span>
+        ${q.mode === "test" ? `<span id="quiz-timer" class="timer ${q.remainingSec <= 30 ? "low" : ""}">${formatTime(q.remainingSec)}</span>` : "<span></span>"}
       </div>
-      <div class="progressbar"><div style="width:${pct}%"></div></div>
-      <div class="card">
-        <h3>${esc(question.prompt)}</h3>
+      <div class="progressbar"><div style="width:${lastProgress}%" data-to="${pct}"></div></div>
+      <div class="card question-card">
+        <div class="q-type">${question.type === "mc" ? "Multiple choice" : "Short answer"}</div>
+        <h2 class="q-prompt">${esc(question.prompt)}</h2>
         ${body}
         ${feedback}
       </div>
-      <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem">
-        <button class="btn" data-action="quiz-prev" ${q.index === 0 ? "disabled" : ""}>&larr; Back</button>
+      <div class="quiz-nav">
+        <button class="btn" data-action="quiz-prev" ${q.index === 0 ? "disabled" : ""}>${icon("back")}Back</button>
         ${showCheck ? `<button class="btn primary" data-action="quiz-check">Check answer</button>` : ""}
-        ${!showCheck && !isLast ? `<button class="btn primary" data-action="quiz-next">Next &rarr;</button>` : ""}
-        ${!showCheck && isLast ? `<button class="btn gold" data-action="quiz-submit" ${q.submitting ? "disabled" : ""}>${q.submitting ? "Grading&hellip;" : q.mode === "test" ? "Submit test" : "Finish"}</button>` : ""}
+        ${!showCheck && !isLast ? `<button class="btn primary" data-action="quiz-next">Next${icon("chevron")}</button>` : ""}
+        ${!showCheck && isLast ? `<button class="btn gold" data-action="quiz-submit" ${q.submitting ? "disabled" : ""}>${q.submitting ? '<span class="spinner"></span> Grading' : q.mode === "test" ? "Submit test" : "Finish"}</button>` : ""}
       </div>
     `;
   }
@@ -938,91 +1104,115 @@
     const q = state.quiz;
     const r = q.result;
     const pct = r.total ? Math.round((r.correctCount / r.total) * 100) : 0;
-    const items = q.questions.map((question) => {
+    const C = 2 * Math.PI * 52;
+    const verdict = pct >= 90 ? "Excellent work" : pct >= 75 ? "Solid" : pct >= 50 ? "Getting there" : "Keep practicing";
+    const items = q.questions.map((question, idx) => {
       const p = r.perQuestion.find((x) => x.id === question._id);
       const correct = !!p.correct;
-      return `<div class="review-item">
-        <div class="verdict ${correct ? "correct" : "incorrect"}">${correct ? "CORRECT" : "INCORRECT"}</div>
-        <strong>${esc(question.prompt)}</strong>
-        ${question.type === "mc" ? `
-          <div class="help">Your answer: ${p.given != null ? esc(question.choices[p.given]) : "(no answer)"}</div>
-          <div class="help">Correct answer: ${esc(question.choices[question.correctIndex])}</div>
-          ${question.explanation ? `<div class="help">${esc(question.explanation)}</div>` : ""}
-        ` : `
-          <div class="help">Your answer: ${esc(p.given || "(no answer)")}</div>
-          <div class="help">Expected: ${esc(question.answer)}</div>
-          ${p.feedback ? `<div class="help">${esc(p.feedback)}</div>` : ""}
-        `}
+      return `<div class="review-item ${correct ? "is-correct" : "is-wrong"}">
+        <span class="verdict-dot">${correct ? icon("check") : "&times;"}</span>
+        <div>
+          <div class="ri-prompt"><span class="num">${idx + 1}.</span> ${esc(question.prompt)}</div>
+          ${question.type === "mc" ? `
+            <div class="ri-line"><span>Your answer</span>${p.given != null ? esc(question.choices[p.given]) : "(no answer)"}</div>
+            ${!correct ? `<div class="ri-line good"><span>Correct</span>${esc(question.choices[question.correctIndex])}</div>` : ""}
+            ${question.explanation ? `<div class="help">${esc(question.explanation)}</div>` : ""}
+          ` : `
+            <div class="ri-line"><span>Your answer</span>${esc(p.given || "(no answer)")}</div>
+            <div class="ri-line good"><span>Expected</span>${esc(question.answer)}</div>
+            ${p.feedback ? `<div class="help">${esc(p.feedback)}</div>` : ""}
+          `}
+        </div>
       </div>`;
     }).join("");
     return `
-      <div class="score-hero">
-        <div class="score">${r.correctCount}/${r.total}</div>
-        <p class="meta">${pct}% &middot; ${state.quiz.mode === "test" ? "Test mode" : "Study mode"}</p>
+      <div class="card score-card">
+        <div class="ring" style="--dash:${C.toFixed(1)};--off:${(C * (1 - pct / 100)).toFixed(1)}">
+          <svg viewBox="0 0 120 120"><circle class="ring-bg" cx="60" cy="60" r="52"/><circle class="ring-fg ${pct >= 75 ? "good" : pct >= 50 ? "mid" : "low"}" cx="60" cy="60" r="52"/></svg>
+          <div class="ring-label"><span class="num">${pct}%</span></div>
+        </div>
+        <div>
+          <div class="eyebrow">${state.quiz.mode === "test" ? "Test mode" : "Study mode"} &middot; ${esc(q.test.title)}</div>
+          <h1>${verdict}</h1>
+          <p class="score-line"><span class="num" data-countup="${r.correctCount}" data-total="${r.total}">${r.correctCount}/${r.total}</span> correct</p>
+          <div class="builder-actions">
+            <button class="btn primary" data-action="retry-quiz">Try again</button>
+            <button class="btn" data-action="close-review">Back to test</button>
+          </div>
+        </div>
       </div>
-      <div class="card">${items}</div>
-      <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap">
-        <button class="btn primary" data-action="close-review">Back to test</button>
-      </div>
+      <div class="section-label">Question review</div>
+      <div class="card flush">${items}</div>
     `;
   }
 
   function flashcardsView() {
     const f = state.flash;
     const card = f.cards[f.order[f.index]];
+    const entering = lastFlashIndex !== f.index;
+    lastFlashIndex = f.index;
+    const done = f.know + f.learning;
     return `
-      <button class="btn ghost small" data-action="close-flashcards">&larr; ${esc(f.test.title)}</button>
-      <p class="meta" style="text-align:center;margin-top:.5rem">Card ${f.index + 1} of ${f.cards.length} &middot; Know it: ${f.know} &middot; Still learning: ${f.learning}</p>
+      ${crumbs([{ label: state.currentClass.name, action: "back-to-class" }, { label: f.test.title, action: "close-flashcards" }, { label: "Flashcards" }])}
+      <div class="flash-stats">
+        <span>Card <span class="num">${f.index + 1}</span> of <span class="num">${f.cards.length}</span></span>
+        <span class="fs-know">${icon("check")}Know it <span class="num">${f.know}</span></span>
+        <span class="fs-learn">Still learning <span class="num">${f.learning}</span></span>
+      </div>
+      <div class="progressbar thin"><div style="width:${Math.round((done / f.cards.length) * 100)}%"></div></div>
       <div class="flashcard-wrap">
-        <div class="flashcard" data-action="flip-card">
-          <div>
-            <div class="side-label">${f.flipped ? "Definition" : "Term"}</div>
-            <div>${esc(f.flipped ? card.definition : card.term)}</div>
-          </div>
-        </div>
+        <button class="flashcard ${f.flipped ? "flipped" : ""} ${entering ? "fc-enter" : ""}" data-action="flip-card" aria-label="Flip card">
+          <span class="fc-inner">
+            <span class="fc-face fc-front"><span class="side-label">Term</span><span class="fc-text">${esc(card.term)}</span><span class="fc-hint">Click or press space to flip</span></span>
+            <span class="fc-face fc-back"><span class="side-label">Definition</span><span class="fc-text small">${esc(card.definition)}</span></span>
+          </span>
+        </button>
       </div>
       <div class="flashcard-controls">
-        <button class="btn" data-action="flash-prev">&larr; Prev</button>
-        <button class="btn danger" data-action="flash-learning">Still learning</button>
-        <button class="btn primary" data-action="flash-know">Know it</button>
-        <button class="btn" data-action="flash-next">Next &rarr;</button>
-        <button class="btn ghost" data-action="flash-shuffle">Shuffle</button>
+        <button class="btn icon-btn" data-action="flash-prev" aria-label="Previous card">${icon("back")}</button>
+        <button class="btn learn" data-action="flash-learning">Still learning</button>
+        <button class="btn know" data-action="flash-know">${icon("check")}Know it</button>
+        <button class="btn icon-btn" data-action="flash-next" aria-label="Next card">${icon("chevron")}</button>
       </div>
+      <div class="center"><button class="btn ghost small" data-action="flash-shuffle">Shuffle deck</button></div>
     `;
   }
 
-  function subscribeModal() {
-    return `<div class="modal-backdrop" data-action="close-subscribe-backdrop">
-      <div class="modal">
-        <h2>PrepBank+</h2>
-        ${isAdmin() ? `<p>You're an admin, so every test is already unlocked for you.</p>` : isSubscribed() ? `
-          <p>You have PrepBank+ -- every practice test in every class is unlocked.</p>
-          ${state.subscription.current_period_end ? `<p class="help">Renews ${new Date(state.subscription.current_period_end).toLocaleDateString()}.</p>` : ""}
-          <button class="btn block" data-action="manage-billing" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? "Opening&hellip;" : "Manage or cancel subscription"}</button>` : `
-          <div class="price-line"><span class="price">$3</span><span class="help">/ month &middot; cancel anytime</span></div>
+  function subscribeModal(animate) {
+    const perk = (t) => `<li>${icon("check")}<span>${t}</span></li>`;
+    return `<div class="modal-backdrop ${animate ? "animate" : ""}" data-action="close-subscribe-backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="plus-title">
+        <div class="modal-badge">${icon("spark")}</div>
+        <h2 id="plus-title">PrepBank+</h2>
+        ${isAdmin() ? `<p class="help">You're an admin, so every test is already unlocked for you.</p>` : isSubscribed() ? `
+          <p>You have PrepBank+. Every practice test in every class is unlocked.</p>
+          ${state.subscription.current_period_end ? `<p class="help">Renews on ${new Date(state.subscription.current_period_end).toLocaleDateString()}.</p>` : ""}
+          <button class="btn block" data-action="manage-billing" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? '<span class="spinner"></span> Opening' : "Manage or cancel subscription"}</button>` : `
+          <div class="price-line"><span class="price">$3</span><span class="help">per month &middot; cancel anytime</span></div>
           <ul class="perks">
-            <li>Every official PrepBank test, for every HPHS class</li>
-            <li>Every test your classmates have shared</li>
-            <li>Timed test mode, AI-graded short answers, flashcards</li>
+            ${perk("Every official PrepBank test for every HPHS class")}
+            ${perk("Every test your classmates have shared")}
+            ${perk("Timed test mode, AI-graded short answers and flashcards")}
           </ul>
-          <button class="btn gold block" data-action="start-checkout" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? "Opening checkout&hellip;" : "Get PrepBank+"}</button>
-          <p class="help" style="text-align:center">Secure checkout by Stripe. You'll come right back here after paying.</p>`}
-        <button class="btn ghost block" data-action="close-subscribe" style="margin-top:.5rem">Close</button>
+          <button class="btn gold block lg" data-action="start-checkout" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? '<span class="spinner"></span> Opening checkout' : "Get PrepBank+"}</button>
+          <p class="help center">Secure checkout by Stripe. You'll come right back here after paying.</p>`}
+        <button class="btn ghost block" data-action="close-subscribe">Close</button>
       </div>
     </div>`;
   }
 
   function adminView() {
     const a = state.admin;
-    if (!a.loaded) return "<p>Loading admin tools&hellip;</p>";
+    if (!a.loaded) return skeletonRows();
+    const officialCount = a.tests.filter((t) => t.is_official).length;
     const testsRows = a.tests.map((t) => `
-      <div class="card test-row ${t.is_official ? "official" : "student"}">
-        <div>
-          <div class="test-badges">${t.is_official ? '<span class="badge-official">&#10003; Official</span>' : '<span class="badge-student">Student-made</span>'} ${t.is_free ? '<span class="tag">Free</span>' : '<span class="tag">PrepBank+</span>'}</div>
-          <strong>${esc(t.title)}</strong>
-          <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; ${t.question_count} question${t.question_count === 1 ? "" : "s"} &middot; ${(t.flashcards || []).length} flashcards</div>
+      <div class="admin-test ${t.is_official ? "official" : "student"}">
+        <div class="at-main">
+          <div class="test-badges">${t.is_official ? `<span class="badge-official">${icon("check")}Official</span>` : '<span class="badge-student">Student-made</span>'} ${t.is_free ? '<span class="badge-free">Free</span>' : `<span class="badge-plus">${icon("lock")}PrepBank+</span>`}</div>
+          <div class="tr-title">${esc(t.title)}</div>
+          <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; <span class="num">${t.question_count}</span> questions &middot; <span class="num">${(t.flashcards || []).length}</span> flashcards</div>
         </div>
-        <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+        <div class="at-actions">
           <button class="btn small" data-action="admin-toggle-official" data-id="${t.id}" data-official="${t.is_official}">${t.is_official ? "Remove Official" : "Make Official"}</button>
           <button class="btn small" data-action="admin-toggle-free" data-id="${t.id}" data-free="${t.is_free}">${t.is_free ? "Make PrepBank+" : "Make free"}</button>
           <button class="btn small danger" data-action="admin-delete-test" data-id="${t.id}">Delete</button>
@@ -1032,33 +1222,49 @@
     const shownClasses = a.classes.filter((c) => !cq || `${c.name} ${c.subject}`.toLowerCase().includes(cq));
     const classRows = shownClasses.map((c) => `
       <div class="admin-class-row">
-        <div><strong>${esc(c.name)}</strong> <span class="meta">${esc(c.subject)}${c.level ? " &middot; " + esc(c.level) : ""}</span></div>
-        <button class="btn small danger" data-action="admin-delete-class" data-id="${c.id}">Delete</button>
+        <div><span class="acr-name">${esc(c.name)}</span> <span class="meta">${esc(c.subject)}</span></div>
+        <div class="acr-right">${levelTag(c.level)}<button class="btn small danger" data-action="admin-delete-class" data-id="${c.id}">Delete</button></div>
       </div>`).join("");
+    const stat = (label, n) => `<div class="stat"><span class="stat-num num">${n}</span><span class="stat-label">${label}</span></div>`;
 
     return `
-      <h2>Admin</h2>
-      <div class="card">
-        <h3>Import a test from Claude</h3>
-        <p class="help">In your chat with Claude, paste your notes and ask for a "PrepBank import" for a specific class. Copy the JSON block Claude replies with and paste it below -- this creates the class automatically if it doesn't exist yet, and skips the AI generation step on the site (it's already generated).</p>
-        ${a.importError ? `<div class="error-box">${esc(a.importError)}</div>` : ""}
-        <textarea id="admin-import-text" placeholder='{"className": "...", "subject": "...", "title": "...", "isFree": false, "isOfficial": true, "mc": [...], "short": [...], "flashcards": [...]}'>${esc(a.importText)}</textarea>
-        <button class="btn primary" style="margin-top:.6rem" data-action="admin-import" ${a.importBusy ? "disabled" : ""}>${a.importBusy ? "Importing&hellip;" : "Import to PrepBank"}</button>
+      <div class="page-head">
+        <div class="eyebrow">Admin</div>
+        <h1>Manage PrepBank</h1>
       </div>
-      <h3 style="margin-top:1.5rem">All tests (${a.tests.length})</h3>
-      ${a.tests.length === 0 ? '<p class="help">No tests yet.</p>' : testsRows}
-      <h3 style="margin-top:1.5rem">Classes (${a.classes.length})</h3>
-      <p class="help">Only admins can add classes. Students search this list and add study material to it.</p>
-      <div class="card">
-        <form id="admin-class-form" class="admin-class-form">
-          <input type="text" name="name" placeholder="New class name, e.g. AP Art History" required />
-          <select name="subject">${DEPARTMENTS.filter((d) => d !== "All").map((d) => `<option>${esc(d)}</option>`).join("")}</select>
-          <select name="level"><option>On-Level</option><option>Honors</option><option>AP</option><option>Dual Credit</option><option>Elective</option></select>
-          <button class="btn primary" type="submit">Add class</button>
-        </form>
+      <div class="stats">
+        ${stat("Practice tests", a.tests.length)}
+        ${stat("Official", officialCount)}
+        ${stat("Student-made", a.tests.length - officialCount)}
+        ${stat("Classes", a.classes.length)}
       </div>
-      <input type="text" id="admin-class-search" class="search" style="margin-top:1rem" placeholder="Filter classes&hellip;" value="${esc(a.classQuery)}" />
-      <div class="card admin-class-list">${classRows || '<p class="help">No classes match.</p>'}</div>
+      <div class="admin-grid">
+        <section>
+          <div class="section-label">All tests <span class="num">${a.tests.length}</span></div>
+          <div class="card flush">${a.tests.length === 0 ? `<div class="empty-state small">${icon("book")}<p>No tests yet. Open a class and publish one, or import one below.</p></div>` : testsRows}</div>
+          <div class="section-label">Import a test from Claude</div>
+          <div class="card">
+            <p class="help">Send your notes to Claude in chat and ask for a "PrepBank import" for a class. Paste the JSON it gives you here. Imported tests are marked Official unless the JSON says <code>"isOfficial": false</code>.</p>
+            ${a.importError ? `<div class="error-box">${esc(a.importError)}</div>` : ""}
+            <textarea id="admin-import-text" placeholder='{"className": "AP World History", "subject": "Social Studies", "title": "...", "isFree": false, "mc": [...], "short": [...], "flashcards": [...]}'>${esc(a.importText)}</textarea>
+            <div class="builder-actions"><button class="btn primary" data-action="admin-import" ${a.importBusy ? "disabled" : ""}>${a.importBusy ? '<span class="spinner"></span> Importing' : "Import to PrepBank"}</button></div>
+          </div>
+        </section>
+        <section>
+          <div class="section-label">Classes <span class="num">${a.classes.length}</span></div>
+          <div class="card">
+            <form id="admin-class-form" class="admin-class-form">
+              <input type="text" name="name" id="new-class-name" placeholder="New class, e.g. AP Art History" required />
+              <select name="subject" id="new-class-subject">${DEPARTMENTS.filter((d) => d !== "All").map((d) => `<option>${esc(d)}</option>`).join("")}</select>
+              <select name="level" id="new-class-level"><option>On-Level</option><option>Honors</option><option>AP</option><option>Dual Credit</option><option>Elective</option></select>
+              <button class="btn primary" type="submit">Add class</button>
+            </form>
+            <p class="help">Only admins can add classes. Students search this list and add study material to it.</p>
+          </div>
+          <label class="searchbox compact" for="admin-class-search">${icon("search")}<input type="text" id="admin-class-search" placeholder="Filter classes" value="${esc(a.classQuery)}" /></label>
+          <div class="card flush admin-class-list">${classRows || '<p class="help pad">No classes match.</p>'}</div>
+        </section>
+      </div>
     `;
   }
 
@@ -1073,7 +1279,11 @@
       if (file) handleFileUpload(file);
     });
     const materialEl = document.getElementById("material");
-    if (materialEl) materialEl.addEventListener("input", (e) => { state.builder.material = e.target.value; });
+    if (materialEl) materialEl.addEventListener("input", (e) => {
+      state.builder.material = e.target.value;
+      const cc = document.getElementById("char-count");
+      if (cc) cc.textContent = e.target.value.length.toLocaleString() + " characters";
+    });
     ["count-mc", "count-short", "count-flash"].forEach((id, i) => {
       const key = ["mc", "short", "flashcards"][i];
       const el = document.getElementById(id);
@@ -1091,6 +1301,7 @@
     if (searchEl) searchEl.addEventListener("input", (e) => {
       state.classQuery = e.target.value;
       document.getElementById("class-results").innerHTML = classResults();
+      document.getElementById("dept-rail").innerHTML = deptRail();
     });
     const adminSearch = document.getElementById("admin-class-search");
     if (adminSearch) adminSearch.addEventListener("input", (e) => {
@@ -1121,6 +1332,17 @@
     }
   });
 
+  document.addEventListener("keydown", (e) => {
+    if (state.view === "flashcards" && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
+      const act = { " ": "flip-card", ArrowRight: "flash-next", ArrowLeft: "flash-prev" }[e.key];
+      if (act) { e.preventDefault(); const b = document.querySelector(`[data-action="${act}"]`); if (b) b.click(); return; }
+    }
+    if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      const el = document.getElementById("class-search");
+      if (el) { e.preventDefault(); el.focus(); }
+    }
+  });
+
   document.addEventListener("click", (e) => {
     const el = e.target.closest("[data-action]");
     if (!el) return;
@@ -1131,6 +1353,8 @@
       case "auth-tab-signin": state.authMode = "signin"; state.authError = null; render(); break;
       case "auth-tab-signup": state.authMode = "signup"; state.authError = null; render(); break;
       case "filter-dept": state.classDept = el.dataset.dept; render(); break;
+      case "filter-level": state.classLevel = el.dataset.level; render(); break;
+      case "clear-filters": state.classQuery = ""; state.classDept = "All"; state.classLevel = "All levels"; render(); break;
       case "set-access": state.builder.access = el.dataset.access; render(); break;
       case "start-checkout": goToStripe("/api/checkout"); break;
       case "manage-billing": goToStripe("/api/portal"); break;
@@ -1173,7 +1397,8 @@
       case "quiz-next": state.quiz.index = Math.min(state.quiz.questions.length - 1, state.quiz.index + 1); render(); break;
       case "quiz-submit": submitQuiz(); break;
       case "close-review": stopTimer(); state.view = "test"; render(); break;
-      case "flip-card": state.flash.flipped = !state.flash.flipped; render(); break;
+      case "flip-card": state.flash.flipped = !state.flash.flipped; el.classList.toggle("flipped", state.flash.flipped); el.classList.remove("fc-enter"); break;
+      case "retry-quiz": startQuiz(state.quiz.test, state.quiz.mode); break;
       case "flash-next": {
         const f = state.flash;
         f.index = Math.min(f.cards.length - 1, f.index + 1);
