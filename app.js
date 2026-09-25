@@ -397,16 +397,12 @@
     b.busy = true;
     render();
     try {
-      const resp = await fetch("/api/ai", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "generate",
-          subject: state.currentClass.subject,
-          className: state.currentClass.name,
-          material: b.material,
-          counts: b.counts,
-        }),
+      const resp = await aiFetch({
+        action: "generate",
+        subject: state.currentClass.subject,
+        className: state.currentClass.name,
+        material: b.material,
+        counts: b.counts,
       });
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || "Generation failed.");
@@ -545,13 +541,9 @@
 
     if (shortToGrade.length > 0) {
       try {
-        const resp = await fetch("/api/ai", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            action: "grade",
-            pairs: shortToGrade.map(({ prompt, expectedAnswer, studentAnswer }) => ({ prompt, expectedAnswer, studentAnswer })),
-          }),
+        const resp = await aiFetch({
+          action: "grade",
+          pairs: shortToGrade.map(({ prompt, expectedAnswer, studentAnswer }) => ({ prompt, expectedAnswer, studentAnswer })),
         });
         const json = await resp.json();
         if (resp.ok && Array.isArray(json.results)) {
@@ -622,6 +614,22 @@
   // ---------------------------------------------------------------------
   // Subscription (placeholder -- swap for real Stripe later, see README)
   // ---------------------------------------------------------------------
+
+  // Calls our /api/ai function as the signed-in user. If the login token has
+  // expired (e.g. a wrong device clock), refresh it once and try again.
+  async function aiFetch(payload) {
+    const send = (token) => fetch("/api/ai", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + token },
+      body: JSON.stringify(payload),
+    });
+    let resp = await send(state.session ? state.session.access_token : "");
+    if (resp.status === 401) {
+      const { data } = await sb.auth.refreshSession();
+      if (data && data.session) { state.session = data.session; resp = await send(data.session.access_token); }
+    }
+    return resp;
+  }
 
   // Calls one of our /api billing endpoints and sends the browser to the Stripe page it returns.
   async function goToStripe(endpoint) {
