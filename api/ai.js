@@ -5,11 +5,20 @@
 // Optional:
 //   ANTHROPIC_MODEL    (defaults to a small, cheap model -- see README.md)
 
+const { getUser } = require("./_lib");
+
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  // Only signed-in PrepBank users can use the AI (protects the API credits)
+  const user = await getUser(req).catch(() => null);
+  if (!user || !user.id) {
+    res.status(401).json({ error: "Please sign in again to use this." });
     return;
   }
 
