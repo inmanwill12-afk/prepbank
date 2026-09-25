@@ -179,7 +179,7 @@
   }
 
   async function openClass(cls) {
-    if (!state.currentClass || state.currentClass.id !== cls.id) { state.classUnit = "all"; state.classTab = "all"; }
+    if (!state.currentClass || state.currentClass.id !== cls.id) { state.classUnit = "all"; state.classTab = null; }
     state.currentClass = cls;
     state.tests = [];
     state.testsLoaded = false;
@@ -349,6 +349,7 @@
       counts: admin ? { mc: 15, short: 5, flashcards: 20 } : { mc: 6, short: 4, flashcards: 8 },
       generated: null, busy: false, error: null, saving: false,
       official: admin, access: "plus", unit: "auto", files: [],
+      tag: state.classTab === "tag",
     };
   }
 
@@ -460,6 +461,7 @@
         // Admins choose free vs PrepBank+. For students, the first test in a class is free to try.
         is_free: admin ? b.access === "free" : state.tests.length === 0,
         is_official: admin && !!b.official,
+        is_tag: !!(state.currentClass.has_tag && b.tag),
         unit: /^\d+$/.test(String(b.unit)) ? Number(b.unit) : null,
         question_count: mcAndShort.length,
         questions: mcAndShort,
@@ -470,6 +472,7 @@
       if (error) throw error;
       state.tests.unshift(data);
       state.tests.sort((a, c) => (c.is_official ? 1 : 0) - (a.is_official ? 1 : 0));
+      state.classTab = data.is_tag ? "tag" : (state.classTab === "tag" ? null : state.classTab);
       resetBuilder();
       state.view = "class";
       setToast(data.is_official ? "Official test published." : "Test shared! PrepBank is scoring its quality now…");
@@ -964,8 +967,12 @@
   function classView() {
     const c = state.currentClass;
     if (!c) return "";
-    const official = state.tests.filter((t) => t.is_official);
-    const student = state.tests.filter((t) => !t.is_official);
+    // Classes with a TAG section keep TAG tests in their own tab
+    const hasTag = !!c.has_tag;
+    const tagTests = hasTag ? state.tests.filter((t) => t.is_tag) : [];
+    const regular = hasTag ? state.tests.filter((t) => !t.is_tag) : state.tests;
+    const official = regular.filter((t) => t.is_official);
+    const student = regular.filter((t) => !t.is_official);
     const addLabel = isAdmin() ? "Publish an official test" : "Add your study guide";
     let body;
     if (!state.testsLoaded) body = skeletonRows();
@@ -974,11 +981,13 @@
         <p>Add your study guide, notes or review sheet and PrepBank turns it into the first practice test for this class. The first one is free for everyone.</p>
         <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${icon("upload")}${addLabel}</button></div>`;
     else {
-      // Tabs: All / Official / Student-made
-      const tab = state.classTab || "all";
-      const inTab = state.tests.filter((t) => tab === "all" || (tab === "official" ? t.is_official : !t.is_official));
+      // Tabs: All / Official / Student-made (+ TAG for classes with a TAG section)
+      const tab = state.classTab || (hasTag && !regular.length && tagTests.length ? "tag" : "all");
+      const inTab = tab === "tag" ? tagTests : regular.filter((t) => tab === "all" || (tab === "official" ? t.is_official : !t.is_official));
+      const tabList = [["all", hasTag ? "All" : "All tests", regular.length], ["official", "Official", official.length], ["student", "Student-made", student.length]];
+      if (hasTag) tabList.push(["tag", "TAG", tagTests.length]);
       const tabs = `<div class="seg class-tabs" role="tablist" aria-label="Test type">
-          ${[["all", "All tests", state.tests.length], ["official", "Official", official.length], ["student", "Student-made", student.length]].map(([k, l, n]) =>
+          ${tabList.map(([k, l, n]) =>
             `<button role="tab" class="${tab === k ? "on" : ""}" aria-selected="${tab === k}" data-action="class-tab" data-tab="${k}">${l} <span class="num">${n}</span></button>`).join("")}
         </div>`;
       // Groups: units first (by number), then semesters for tests without a unit (newest first)
@@ -996,7 +1005,13 @@
         const bestStudent = list.find((t) => !t.is_official && Number.isInteger(t.quality_score) && t.quality_score >= 70);
         return `<section class="test-group unit-group"><div class="unit-head"><h2>${esc(g.label)}</h2><span class="count">${list.length} ${list.length === 1 ? "test" : "tests"}</span></div><div class="stagger">${list.map((t) => testRow(t, t === bestStudent)).join("")}</div></section>`;
       }).join("");
-      const emptyTab = !inTab.length ? `<div class="empty-state small">${icon(tab === "official" ? "check" : "users")}<h3>No ${tab === "official" ? "official" : "student-made"} tests yet</h3><p>${tab === "official" ? "PrepBank hasn't published an official test for this class yet." : "Be the first: add your study guide and earn leaderboard points."}</p></div>` : "";
+      const emptyMsg = {
+        all: ["No tests for the regular section yet", hasTag ? "Tests for the TAG section are in the TAG tab. Add your study guide to make the first regular one." : "Be the first: add your study guide and earn leaderboard points."],
+        official: ["No official tests yet", "PrepBank hasn't published an official test for this class yet."],
+        student: ["No student-made tests yet", "Be the first: add your study guide and earn leaderboard points."],
+        tag: ["No TAG tests yet", "The TAG section covers different material. If you're in TAG, add your study guide and it will show up here."],
+      }[tab] || ["No tests yet", ""];
+      const emptyTab = !inTab.length ? `<div class="empty-state small">${icon(tab === "official" ? "check" : "users")}<h3>${emptyMsg[0]}</h3><p>${emptyMsg[1]}</p></div>` : "";
       body = tabs + chips + (emptyTab || groupHtml);
     }
     return `
@@ -1149,6 +1164,10 @@
           ${unitSelect(b.unit)}
           <p class="help">${Number.isInteger(b.detectedUnit) ? `PrepBank found <strong>Unit ${b.detectedUnit}</strong> in your material.` : "No unit labels were found in your material, so this test will be filed by semester."} Change it if that's wrong.</p>
         </div>
+        ${state.currentClass.has_tag ? `<label class="switch-row tag-row" for="opt-tag">
+          <span><strong>For the TAG section</strong><span class="help">TAG covers different material, so these tests get their own tab</span></span>
+          <input type="checkbox" id="opt-tag" class="switch" ${b.tag ? "checked" : ""} />
+        </label>` : ""}
         ${isAdmin() ? `<p class="help">Publishing as ${b.official ? "<strong>Official</strong>" : "a regular test"} &middot; ${b.access === "free" ? "Free for everyone" : "PrepBank+ only"}</p>` : ""}
         <div class="builder-actions">
           <button class="btn primary lg" data-action="save-test" ${b.saving ? "disabled" : ""}>${b.saving ? '<span class="spinner"></span> Saving' : isAdmin() ? "Publish to class" : "Share with my class"}</button>
@@ -1860,6 +1879,8 @@
     }));
     const officialEl = document.getElementById("opt-official");
     if (officialEl) officialEl.addEventListener("change", (e) => { state.builder.official = e.target.checked; });
+    const tagEl = document.getElementById("opt-tag");
+    if (tagEl) tagEl.addEventListener("change", (e) => { state.builder.tag = e.target.checked; });
   }
 
   document.addEventListener("submit", (e) => {
