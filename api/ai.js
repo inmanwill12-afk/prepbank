@@ -134,7 +134,8 @@ function clampInt(n, min, max) {
 async function generateQuestions(body, apiKey) {
   const { subject, className, material, counts } = body;
   const mcCount = clampInt(counts && counts.mc, 0, 25);
-  const shortCount = clampInt(counts && counts.short, 0, 25);
+  // Tests max out at 45 questions (multiple choice + short answer)
+  const shortCount = Math.min(clampInt(counts && counts.short, 0, 25), 45 - mcCount);
   const flashCount = clampInt(counts && counts.flashcards, 0, 40);
   const trimmedMaterial = String(material || "").slice(0, 45000);
 
