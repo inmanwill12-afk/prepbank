@@ -22,7 +22,7 @@ module.exports = async (req, res) => {
             currency: "usd",
             unit_amount: PRICE_CENTS,
             recurring: { interval: "month" },
-            product_data: { name: "PrepBank+", description: "Every practice test for every HPISD class." },
+            product_data: { name: "PrepBank+", description: "Every practice test for every HPISD class.", tax_code: "txcd_20060058" }, // Training Services - Self-study Web-based (required by Stripe Managed Payments)
           },
         },
       },
