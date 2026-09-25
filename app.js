@@ -762,7 +762,7 @@
   }
 
   function footer() {
-    return `<footer class="site-footer"><div>${brandMark()} PrepBank</div><p>Made by students at Highland Park High School. Practice tests are AI-generated from material classmates share, so check anything important against your own notes before an exam.</p></footer>`;
+    return `<footer class="site-footer"><div>${brandMark()} PrepBank</div><p>Made by students at Highland Park High School. Practice tests are AI-generated from material classmates share, so check anything important against your own notes before an exam. Independent student project, not affiliated with Highland Park ISD.</p><nav class="footer-links"><a href="/terms.html">Terms &amp; Privacy</a><a href="/terms.html#billing">Refunds</a><a href="mailto:inmanwill12@yahoo.com">Contact</a></nav></footer>`;
   }
 
   function authScreen(entering) {
@@ -1274,7 +1274,7 @@
             ${perk("Timed test mode, AI-graded short answers and flashcards")}
           </ul>
           <button class="btn gold block lg" data-action="start-checkout" ${state.subscribeBusy ? "disabled" : ""}>${state.subscribeBusy ? '<span class="spinner"></span> Opening checkout' : "Get PrepBank+"}</button>
-          <p class="help center">Secure checkout by Stripe. You'll come right back here after paying.</p>`}
+          <p class="help center">Secure checkout by Stripe. Renews monthly until you cancel; no refunds for partial months. Under 18? Ask a parent first. <a href="/terms.html#billing" target="_blank" rel="noopener">Terms</a></p>`}
         <button class="btn ghost block" data-action="close-subscribe">Close</button>
       </div>
     </div>`;

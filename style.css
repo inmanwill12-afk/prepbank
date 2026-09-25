@@ -177,6 +177,9 @@ main.wide { max-width: 1160px; }
 .site-footer > div { display: inline-flex; align-items: center; gap: 0.45rem; font-family: var(--display); font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
 .site-footer .logo { width: 20px; height: 20px; }
 .site-footer p { max-width: 70ch; }
+.footer-links { display: flex; gap: 1rem; margin-left: auto; white-space: nowrap; }
+.footer-links a { color: var(--ink-soft); font-weight: 600; text-decoration: none; }
+.footer-links a:hover { color: var(--brand); text-decoration: underline; }
 
 /* ---------- Buttons ---------- */
 .btn {
@@ -628,6 +631,7 @@ main.view-enter .catalog-group:nth-child(n+4) { animation-delay: 0.18s; }
   .score-card { gap: 1.25rem; }
   .ring { width: 104px; height: 104px; }
   .site-footer { flex-direction: column; gap: 0.5rem; }
+  .footer-links { margin-left: 0; }
   .level-seg, .unit-chips { align-self: stretch; overflow-x: auto; flex-wrap: nowrap; }
   .unit-chips button { flex: none; }
   .level-seg button { flex: none; }
