@@ -76,7 +76,7 @@
       saving: false,
       official: true,
       access: "plus",
-      unit: "",
+      unit: "auto",
     },
     quiz: null,
     checkoutBusy: false,
@@ -179,7 +179,7 @@
   }
 
   async function openClass(cls) {
-    if (!state.currentClass || state.currentClass.id !== cls.id) state.classUnit = "all";
+    if (!state.currentClass || state.currentClass.id !== cls.id) { state.classUnit = "all"; state.classTab = "all"; }
     state.currentClass = cls;
     state.tests = [];
     state.testsLoaded = false;
@@ -348,7 +348,7 @@
       material: "", sourceNote: "",
       counts: admin ? { mc: 15, short: 5, flashcards: 20 } : { mc: 6, short: 4, flashcards: 8 },
       generated: null, busy: false, error: null, saving: false,
-      official: admin, access: "plus", unit: "",
+      official: admin, access: "plus", unit: "auto", files: [],
     };
   }
 
@@ -363,7 +363,7 @@
       const buf = await file.arrayBuffer();
       const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
       let text = "";
-      for (let i = 1; i <= pdf.numPages && text.length < 20000; i++) {
+      for (let i = 1; i <= pdf.numPages && text.length < 60000; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
         text += content.items.map((it) => it.str).join(" ") + "\n\n";
@@ -380,7 +380,8 @@
     try {
       const text = await extractFileText(file);
       state.builder.material = (state.builder.material ? state.builder.material + "\n\n" : "") + text.trim();
-      state.builder.sourceNote = state.builder.sourceNote || file.name;
+      state.builder.files = [...(state.builder.files || []), file.name];
+      state.builder.sourceNote = state.builder.files.join(", ").slice(0, 200);
     } catch (e) {
       state.builder.error = e.message;
     }
@@ -390,7 +391,6 @@
   async function handleGenerate() {
     const b = state.builder;
     b.error = null;
-    if (b.unit === "") { b.error = "Choose which unit this material is from."; render(); window.scrollTo(0, 0); return; }
     if (!b.material.trim()) { b.error = "Paste or upload some study material first."; render(); return; }
     const total = b.counts.mc + b.counts.short + b.counts.flashcards;
     if (total <= 0) { b.error = "Ask for at least one question or flashcard."; render(); return; }
@@ -406,6 +406,9 @@
       });
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || "Generation failed.");
+      // Unit: use what the student picked, or what the AI found in the material ("Lesson 2.3" = Unit 2)
+      if (b.unit === "auto") b.unit = Number.isInteger(json.detectedUnit) ? String(json.detectedUnit) : "none";
+      b.detectedUnit = json.detectedUnit;
       if ((json.mc || []).length + (json.short || []).length + (json.flashcards || []).length === 0) {
         throw new Error("The AI didn't return any questions -- try with more material.");
       }
@@ -421,6 +424,22 @@
     if (!state.builder.generated) return;
     state.builder.generated[kind].splice(idx, 1);
     render();
+  }
+
+  // Ask the server to score a student test's quality (once per test) and show the result
+  async function requestReview(testId, announce) {
+    try {
+      const resp = await aiFetch({ action: "review", testId });
+      const json = await resp.json();
+      if (!resp.ok || !Number.isInteger(json.score)) return;
+      const apply = (t) => { if (t && t.id === testId) { t.quality_score = json.score; t.quality_note = json.note; t.reviewed_at = new Date().toISOString(); } };
+      (state.tests || []).forEach(apply);
+      if (state.mine && state.mine.tests) state.mine.tests.forEach(apply);
+      if (announce) {
+        const bonus = json.score >= 50 ? Math.round(json.score / 2) : 0;
+        setToast(`Quality score: ${json.score}/100${bonus ? ` (+${bonus} leaderboard points)` : ""}. ${json.note || ""}`);
+      } else render();
+    } catch (e) { /* scoring can be retried later from My tests */ }
   }
 
   async function saveGeneratedTest(title) {
@@ -441,7 +460,7 @@
         // Admins choose free vs PrepBank+. For students, the first test in a class is free to try.
         is_free: admin ? b.access === "free" : state.tests.length === 0,
         is_official: admin && !!b.official,
-        unit: b.unit === "" ? null : Number(b.unit),
+        unit: /^\d+$/.test(String(b.unit)) ? Number(b.unit) : null,
         question_count: mcAndShort.length,
         questions: mcAndShort,
         flashcards: b.generated.flashcards,
@@ -453,7 +472,8 @@
       state.tests.sort((a, c) => (c.is_official ? 1 : 0) - (a.is_official ? 1 : 0));
       resetBuilder();
       state.view = "class";
-      setToast("Practice test saved.");
+      setToast(data.is_official ? "Official test published." : "Test shared! PrepBank is scoring its quality now…");
+      if (!data.is_official) requestReview(data.id, true);
     } catch (e) {
       b.error = isFilterError(e)
         ? "Your test wasn't posted because it contains language that isn't allowed on PrepBank. Remove it and try again."
@@ -923,7 +943,7 @@
       : `<span class="current">${esc(p.label)}</span>`).join("")}</nav>`;
   }
 
-  function testRow(t) {
+  function testRow(t, best) {
     const locked = testIsLocked(t);
     const author = t.profiles && t.profiles.display_name;
     const fc = (t.flashcards || []).length;
@@ -932,9 +952,10 @@
         <span class="test-badges">
           ${t.is_official ? `<span class="badge-official">${icon("check")}Official</span>` : '<span class="badge-student">Student-made</span>'}
           ${t.is_free ? '<span class="badge-free">Free</span>' : ""}
+          ${qualityBadges(t, best)}
         </span>
         <span class="tr-title">${esc(t.title)}</span>
-        <span class="meta"><span class="num">${t.question_count}</span> questions${fc ? ` &middot; <span class="num">${fc}</span> flashcards` : ""}${!t.is_official && author ? ` &middot; shared by ${esc(author)}` : ""}</span>
+        <span class="meta"><span class="num">${t.question_count}</span> questions${fc ? ` &middot; <span class="num">${fc}</span> flashcards` : ""}${!t.is_official && author ? ` &middot; shared by ${esc(author)}` : ""}${!t.is_official && Number.isInteger(t.quality_score) ? ` &middot; quality <span class="num">${t.quality_score}</span>` : ""}</span>
       </span>
       <span class="tr-side">${pinButton("test", t.id, true)}${locked ? `<span class="lock">${icon("lock")}PrepBank+</span>` : `<span class="tr-open">Open${icon("chevron")}</span>`}</span>
     </div>`;
@@ -953,17 +974,30 @@
         <p>Add your study guide, notes or review sheet and PrepBank turns it into the first practice test for this class. The first one is free for everyone.</p>
         <button class="btn ${isAdmin() ? "primary" : "gold"}" data-action="start-build-test">${icon("upload")}${addLabel}</button></div>`;
     else {
-      const key = (t) => (t.unit === null || t.unit === undefined ? -1 : t.unit);
-      const units = [...new Set(state.tests.map(key))].sort((a, b) => (a < 0) - (b < 0) || a - b);
-      const shown = state.classUnit === "all" ? units : units.filter((u) => String(u) === String(state.classUnit));
-      const chips = units.length > 1 ? `<div class="seg unit-chips" role="group" aria-label="Filter by unit">
-          <button class="chip ${state.classUnit === "all" ? "on" : ""}" data-action="filter-unit" data-unit="all">All units</button>
-          ${units.map((u) => `<button class="chip ${String(state.classUnit) === String(u) ? "on" : ""}" data-action="filter-unit" data-unit="${u}">${esc(unitLabel(u))}</button>`).join("")}
+      // Tabs: All / Official / Student-made
+      const tab = state.classTab || "all";
+      const inTab = state.tests.filter((t) => tab === "all" || (tab === "official" ? t.is_official : !t.is_official));
+      const tabs = `<div class="seg class-tabs" role="tablist" aria-label="Test type">
+          ${[["all", "All tests", state.tests.length], ["official", "Official", official.length], ["student", "Student-made", student.length]].map(([k, l, n]) =>
+            `<button role="tab" class="${tab === k ? "on" : ""}" aria-selected="${tab === k}" data-action="class-tab" data-tab="${k}">${l} <span class="num">${n}</span></button>`).join("")}
+        </div>`;
+      // Groups: units first (by number), then semesters for tests without a unit (newest first)
+      const groups = new Map();
+      inTab.forEach((t) => { const g = groupOf(t); if (!groups.has(g.key)) groups.set(g.key, { ...g, tests: [] }); groups.get(g.key).tests.push(t); });
+      const ordered = [...groups.values()].sort((a, b) => a.sort - b.sort);
+      const shown = state.classUnit === "all" ? ordered : ordered.filter((g) => g.key === state.classUnit);
+      const chips = ordered.length > 1 ? `<div class="seg unit-chips" role="group" aria-label="Filter by unit">
+          <button class="chip ${state.classUnit === "all" ? "on" : ""}" data-action="filter-unit" data-unit="all">All</button>
+          ${ordered.map((g) => `<button class="chip ${state.classUnit === g.key ? "on" : ""}" data-action="filter-unit" data-unit="${g.key}">${esc(g.label)}</button>`).join("")}
         </div>` : "";
-      body = chips + shown.map((u) => {
-        const list = state.tests.filter((t) => key(t) === u).sort((a, b) => (b.is_official ? 1 : 0) - (a.is_official ? 1 : 0));
-        return `<section class="test-group unit-group"><div class="unit-head"><h2>${esc(unitLabel(u))}</h2><span class="count">${list.length} ${list.length === 1 ? "test" : "tests"}</span></div><div class="stagger">${list.map(testRow).join("")}</div></section>`;
+      const rank = (t) => (t.is_official ? 1e6 : 0) + (Number.isInteger(t.quality_score) ? t.quality_score * 100 : 0) + (t.question_count || 0);
+      const groupHtml = shown.map((g) => {
+        const list = g.tests.slice().sort((a, b) => rank(b) - rank(a));
+        const bestStudent = list.find((t) => !t.is_official && Number.isInteger(t.quality_score) && t.quality_score >= 70);
+        return `<section class="test-group unit-group"><div class="unit-head"><h2>${esc(g.label)}</h2><span class="count">${list.length} ${list.length === 1 ? "test" : "tests"}</span></div><div class="stagger">${list.map((t) => testRow(t, t === bestStudent)).join("")}</div></section>`;
       }).join("");
+      const emptyTab = !inTab.length ? `<div class="empty-state small">${icon(tab === "official" ? "check" : "users")}<h3>No ${tab === "official" ? "official" : "student-made"} tests yet</h3><p>${tab === "official" ? "PrepBank hasn't published an official test for this class yet." : "Be the first: add your study guide and earn leaderboard points."}</p></div>` : "";
+      body = tabs + chips + (emptyTab || groupHtml);
     }
     return `
       ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: c.subject, action: "nav-browse" }, { label: c.name }])}
@@ -977,6 +1011,39 @@
       </div>
       ${body}
     `;
+  }
+
+  // How much material the student has added, with a nudge toward adding more
+  function materialMeter(n) {
+    const lv = n >= 15000 ? ["great", "Great: lots of material means a stronger test", 100]
+      : n >= 5000 ? ["good", "Good. Add another file (vocab, review sheet) to make it even better", 70]
+      : n >= 1500 ? ["ok", "Okay. More material gives better, harder questions", 40]
+      : n > 0 ? ["low", "Too little. Add the unit's slides or notes", 15]
+      : ["empty", "Add material above", 0];
+    return `<div class="material-meter ${lv[0]}" id="material-meter"><div class="mm-bar"><span style="width:${lv[2]}%"></span></div><span class="help">${lv[1]}</span></div>`;
+  }
+
+  function unitSelect(value) {
+    const v = String(value);
+    return `<select id="unit-select">
+      <option value="auto" ${v === "auto" ? "selected" : ""}>Figure it out from my material (recommended)</option>
+      <option value="none" ${v === "none" ? "selected" : ""}>This class doesn't use units (file by semester)</option>
+      ${Array.from({ length: 16 }, (_, i) => `<option value="${i}" ${v === String(i) ? "selected" : ""}>Unit ${i}</option>`).join("")}
+    </select>`;
+  }
+
+  function uploadGuide(c) {
+    return `<details class="card guide" ${state.builder.material ? "" : "open"}>
+      <summary><span class="guide-icon">${icon("spark")}</span><span><strong>How to make a great test</strong><span class="help">Takes about 2 minutes. Better material = better test = more leaderboard points.</span></span></summary>
+      <ol class="guide-steps">
+        <li><strong>Pick one unit.</strong> Use material from a single unit of ${esc(c.name)}. Making a test for another unit? Start a new one.</li>
+        <li><strong>Get your teacher's slides as a PDF.</strong> Open the slides from Canvas &rarr; in Google Slides click <em>File &rarr; Download &rarr; PDF Document</em> (in PowerPoint: <em>File &rarr; Save As &rarr; PDF</em>).</li>
+        <li><strong>Grab everything else for that unit.</strong> Notes, the review guide and the vocab list: download each as a PDF the same way, or open it, select all (<em>Ctrl/Cmd + A</em>), copy and paste below.</li>
+        <li><strong>Upload all of it.</strong> You can add several files. The more you add, the better the questions and the higher your test's quality score.</li>
+        <li><strong>Check the questions</strong> on the next screen and remove anything that looks wrong.</li>
+      </ol>
+      <p class="help guide-foot">Don't upload real quizzes, tests or answer keys. Material that isn't for ${esc(c.name)} gets rejected, and photos of paper won't work, only PDFs with real text.</p>
+    </details>`;
   }
 
   function buildView() {
@@ -1019,25 +1086,25 @@
       ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: c.name, action: "back-to-class" }, { label: admin ? "Publish" : "Add study guide" }])}
       ${header}
       ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
+      ${uploadGuide(c)}
       <div class="card builder-card ${admin ? "admin-card" : ""} ${b.busy ? "is-busy" : ""}">
-        <div class="field unit-field">
-          <label for="unit-select">Unit</label>
-          <select id="unit-select" required>
-            <option value="" ${b.unit === "" ? "selected" : ""}>Choose the unit this material is from</option>
-            ${Array.from({ length: 16 }, (_, i) => `<option value="${i}" ${String(b.unit) === String(i) ? "selected" : ""}>Unit ${i}</option>`).join("")}
-          </select>
-          <p class="help">Keep each unit separate. If your material covers two units, make a test for each.</p>
-        </div>
-        <div class="field">
-          <div class="label-row"><label for="material">Study material</label><span class="help num" id="char-count">${b.material.length.toLocaleString()} characters</span></div>
-          <textarea id="material" placeholder="Paste your study guide, notes or your teacher's review sheet here">${esc(b.material)}</textarea>
-        </div>
         <label class="dropzone" for="file-upload">
           ${icon("upload")}
-          <span><strong>Upload a file</strong> or drag it here</span>
-          <span class="help">.txt or .pdf with selectable text (not a scanned photo)</span>
-          <input type="file" id="file-upload" accept=".txt,.pdf,text/plain,application/pdf" />
+          <span><strong>Upload files</strong>: slides, notes, review guides</span>
+          <span class="help">PDF or .txt. You can pick several files at once or add them one after another.</span>
+          <input type="file" id="file-upload" accept=".txt,.pdf,text/plain,application/pdf" multiple />
         </label>
+        ${(b.files || []).length ? `<div class="file-chips">${b.files.map((f) => `<span class="file-chip">${icon("book")}${esc(f)}</span>`).join("")}</div>` : ""}
+        <div class="field">
+          <div class="label-row"><label for="material">Or paste text</label><span class="help num" id="char-count">${b.material.length.toLocaleString()} characters</span></div>
+          <textarea id="material" placeholder="Paste notes, a review sheet or a vocab list. Everything you upload shows up here too.">${esc(b.material)}</textarea>
+          ${materialMeter(b.material.length)}
+        </div>
+        <div class="field unit-field">
+          <label for="unit-select">Unit</label>
+          ${unitSelect(b.unit)}
+          <p class="help">PrepBank reads your material for labels like "Unit 3" or "Lesson 2.3". If there aren't any, the test is filed by semester instead.</p>
+        </div>
         <div class="count-inputs">
           <div class="field"><label for="count-mc">Multiple choice</label><input type="number" id="count-mc" min="0" max="25" value="${b.counts.mc}" /></div>
           <div class="field"><label for="count-short">Short answer</label><input type="number" id="count-short" min="0" max="25" value="${b.counts.short}" /></div>
@@ -1070,13 +1137,18 @@
     return `
       ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: state.currentClass.name, action: "back-to-class" }, { label: "Review" }])}
       <div class="page-head">
-        <div class="eyebrow">Step 2 of 2 &middot; ${esc(unitLabel(b.unit === "" ? null : Number(b.unit)))}</div>
+        <div class="eyebrow">Step 2 of 2</div>
         <h1>Review before ${isAdmin() ? "publishing" : "sharing"}</h1>
         <p class="sub">Remove anything that looks wrong before your classmates see it.</p>
       </div>
       ${b.error ? `<div class="error-box">${esc(b.error)}</div>` : ""}
       <div class="card save-card">
-        <div class="field"><label for="test-title">Test title</label><input type="text" id="test-title" placeholder="e.g. Unit 3: Cellular Energetics" value="${esc(state.currentClass.name + " Practice Test")}" /></div>
+        <div class="field"><label for="test-title">Test title</label><input type="text" id="test-title" placeholder="e.g. Unit 3: Cellular Energetics" value="${esc((/^\d+$/.test(String(b.unit)) ? "Unit " + b.unit + ": " : "") + state.currentClass.name + " Practice Test")}" /></div>
+        <div class="field unit-field">
+          <label for="unit-select">Unit</label>
+          ${unitSelect(b.unit)}
+          <p class="help">${Number.isInteger(b.detectedUnit) ? `PrepBank found <strong>Unit ${b.detectedUnit}</strong> in your material.` : "No unit labels were found in your material, so this test will be filed by semester."} Change it if that's wrong.</p>
+        </div>
         ${isAdmin() ? `<p class="help">Publishing as ${b.official ? "<strong>Official</strong>" : "a regular test"} &middot; ${b.access === "free" ? "Free for everyone" : "PrepBank+ only"}</p>` : ""}
         <div class="builder-actions">
           <button class="btn primary lg" data-action="save-test" ${b.saving ? "disabled" : ""}>${b.saving ? '<span class="spinner"></span> Saving' : isAdmin() ? "Publish to class" : "Share with my class"}</button>
@@ -1108,7 +1180,7 @@
     return `
       ${crumbs([{ label: "Classes", action: "nav-browse" }, { label: state.currentClass.name, action: "back-to-class" }, { label: t.title }])}
       <div class="page-head">
-        <div class="eyebrow">${esc(unitLabel(t.unit))} ${t.is_official ? `<span class="badge-official">${icon("check")}Official PrepBank</span>` : `<span class="badge-student">Student-made${author ? " &middot; shared by " + esc(author) : ""}</span>`}</div>
+        <div class="eyebrow">${esc(groupLabel(t))} ${t.is_official ? `<span class="badge-official">${icon("check")}Official PrepBank</span>` : `<span class="badge-student">Student-made${author ? " &middot; shared by " + esc(author) : ""}</span>`}</div>
         <div class="title-row"><h1>${esc(t.title)}</h1>${pinButton("test", t.id)}</div>
         <div class="stat-row">
           <span><span class="num">${mc}</span> multiple choice</span>
@@ -1387,7 +1459,31 @@
   }
 
   function unitLabel(u) {
-    return u === null || u === undefined || u < 0 ? "Other" : "Unit " + u;
+    return u === null || u === undefined || u < 0 ? "No unit" : "Unit " + u;
+  }
+
+  // Tests without a unit are filed by the semester they were shared in
+  function semesterOf(dateStr) {
+    const d = dateStr ? new Date(dateStr) : null;
+    if (!d || isNaN(d)) return { key: "s0", label: "Other" };
+    const m = d.getMonth(), y = d.getFullYear();
+    const season = m <= 4 ? "Spring" : m <= 6 ? "Summer" : "Fall";
+    const order = y * 10 + (m <= 4 ? 1 : m <= 6 ? 2 : 3);
+    return { key: "s" + order, label: season + " " + y, order };
+  }
+  function groupOf(t) {
+    if (Number.isInteger(t.unit)) return { key: "u" + t.unit, label: "Unit " + t.unit, sort: t.unit };
+    const s = semesterOf(t.created_at);
+    return { key: s.key, label: s.label, sort: 1000 + (100000 - (s.order || 0)) };
+  }
+  function groupLabel(t) { return groupOf(t).label; }
+
+  // Quality badges: "Best in unit" for the top student test in each group, "Top rated" for 85+
+  function qualityBadges(t, best) {
+    if (t.is_official || !Number.isInteger(t.quality_score)) return "";
+    if (best) return `<span class="badge-best">${icon("trophy")}Best in ${esc(groupLabel(t).startsWith("Unit") ? "unit" : "semester")}</span>`;
+    if (t.quality_score >= 85) return `<span class="badge-top">${icon("spark")}Top rated</span>`;
+    return "";
   }
 
   function isFilterError(e) {
@@ -1397,7 +1493,7 @@
   // ---- Pins ----
   async function loadPins() {
     const { data } = await sb.from("pins")
-      .select("id, class_id, test_id, tests(id, title, class_id, unit, is_official, is_free, question_count, flashcards, created_by)")
+      .select("id, class_id, test_id, tests(id, title, class_id, unit, is_official, is_free, question_count, flashcards, created_by, created_at, quality_score)")
       .order("created_at", { ascending: false });
     state.pins = data || [];
     render();
@@ -1415,7 +1511,7 @@
       setToast(kind === "class" ? "Class unpinned." : "Test unpinned.");
     } else {
       const { data, error } = await sb.from("pins").insert({ [col]: id })
-        .select("id, class_id, test_id, tests(id, title, class_id, unit, is_official, is_free, question_count, flashcards, created_by)").single();
+        .select("id, class_id, test_id, tests(id, title, class_id, unit, is_official, is_free, question_count, flashcards, created_by, created_at, quality_score)").single();
       if (error) { setToast("Couldn't pin that. Try again."); return; }
       state.pins.unshift(data);
       setToast(kind === "class" ? "Pinned to the top of Classes." : "Test pinned to the top of Classes.");
@@ -1448,7 +1544,7 @@
         ${tests.map((t) => {
           const c = state.classes.find((x) => x.id === t.class_id);
           return `<button class="popular-card pinned-card test" data-action="open-pinned-test" data-id="${t.id}" data-class="${t.class_id}">
-            <span class="pc-dept">${esc(c ? c.name : "")} &middot; ${esc(unitLabel(t.unit))}</span><span class="pc-name">${esc(t.title)}</span>
+            <span class="pc-dept">${esc(c ? c.name : "")} &middot; ${esc(groupLabel(t))}</span><span class="pc-name">${esc(t.title)}</span>
             <span class="pc-count">${t.is_official ? "Official" : "Student-made"} &middot; ${t.question_count} questions</span></button>`;
         }).join("")}
       </div>
@@ -1472,6 +1568,8 @@
       me: (me && me[0]) || { points: 0, plays: 0, tests_published: 0, rank: null },
     };
     render();
+    // Score any of my tests that haven't been reviewed yet (e.g. shared before scoring existed)
+    state.mine.tests.filter((t) => !t.is_official && !t.reviewed_at).slice(0, 5).forEach((t) => requestReview(t.id, false));
   }
 
   function statTiles(me) {
@@ -1493,7 +1591,10 @@
         <div class="at-main">
           <div class="test-badges">${t.is_official ? `<span class="badge-official">${icon("check")}Official</span>` : '<span class="badge-student">Student-made</span>'} ${t.is_free ? '<span class="badge-free">Free</span>' : `<span class="badge-plus">${icon("lock")}PrepBank+</span>`}</div>
           <div class="tr-title">${esc(t.title)}</div>
-          <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; ${esc(unitLabel(t.unit))} &middot; <span class="num">${t.question_count}</span> questions</div>
+          <div class="meta">${esc(t.classes ? t.classes.name : "")} &middot; ${esc(groupLabel(t))} &middot; <span class="num">${t.question_count}</span> questions</div>
+          ${t.is_official ? "" : Number.isInteger(t.quality_score)
+            ? `<div class="quality-line"><span class="q-score ${t.quality_score >= 85 ? "high" : t.quality_score >= 50 ? "mid" : "low"}">Quality <span class="num">${t.quality_score}</span>/100</span>${t.quality_note ? `<span class="help">${esc(t.quality_note)}</span>` : ""}</div>`
+            : `<div class="quality-line"><span class="help"><span class="spinner"></span> Scoring quality&hellip;</span></div>`}
           ${t.is_official ? "" : `<div class="play-line"><span><span class="num">${s.players}</span> ${s.players == 1 ? "student" : "students"}</span><span><span class="num">${s.plays}</span> ${s.plays == 1 ? "play" : "plays"}</span><span class="pts"><span class="num">+${s.points}</span> ${s.points == 1 ? "point" : "points"}</span></div>`}
         </div>
         <div class="at-actions">
@@ -1506,7 +1607,7 @@
       <div class="page-head">
         <div class="eyebrow">Your contributions</div>
         <h1>My tests</h1>
-        <p class="sub">Tests you've shared with your classes. You earn points every time other students practice them.</p>
+        <p class="sub">Tests you've shared with your classes. Each test gets a quality score from PrepBank's AI: good tests (50+) earn up to 50 points right away, and you earn more every time other students practice them.</p>
       </div>
       ${statTiles(m.me)}
       <div class="section-label">Published <span class="num">${m.tests.length}</span></div>
@@ -1539,7 +1640,12 @@
       <div class="page-head">
         <div class="eyebrow">Highland Park High School</div>
         <h1>Leaderboard</h1>
-        <p class="sub">Students whose tests help the most classmates. You get 10 points each time a new student practices one of your tests, plus 1 point for each repeat (up to 4 per student). Official PrepBank tests don't count.</p>
+        <p class="sub">Students whose tests help the most classmates. Better tests earn more.</p>
+        <div class="points-rules">
+          <div><span class="num">+50</span><span>max per test for <strong>quality</strong>: a test with 10+ questions scoring 50 or more earns half its quality score</span></div>
+          <div><span class="num">+10</span><span>each time a <strong>new classmate</strong> practices one of your tests</span></div>
+          <div><span class="num">+1</span><span>for each <strong>repeat</strong> (up to 4 per classmate). Official tests don't count.</span></div>
+        </div>
       </div>
       ${b.me ? `<div class="card me-card">${avatarHtml(state.profile, 44)}<div><strong>${b.me.rank ? "You're #" + b.me.rank : "You're not ranked yet"}</strong><div class="help">${b.me.rank ? `<span class="num">${b.me.points}</span> points from <span class="num">${b.me.plays}</span> plays` : "Share a test in one of your classes to get on the board."}</div></div><button class="btn small" data-action="nav-mytests">My tests</button></div>` : ""}
       ${b.rows.length ? `<div class="card flush lb">${rows}</div>` : `<div class="empty-state">${icon("trophy")}<h3>No one's on the board yet</h3><p>Be the first: share a study guide in one of your classes.</p></div>`}
@@ -1701,14 +1807,16 @@
   function attachDynamicListeners() {
     const fileInput = document.getElementById("file-upload");
     if (fileInput) fileInput.addEventListener("change", (e) => {
-      const file = e.target.files && e.target.files[0];
-      if (file) handleFileUpload(file);
+      const files = [...((e.target.files) || [])];
+      (async () => { for (const f of files) await handleFileUpload(f); })();
     });
     const materialEl = document.getElementById("material");
     if (materialEl) materialEl.addEventListener("input", (e) => {
       state.builder.material = e.target.value;
       const cc = document.getElementById("char-count");
       if (cc) cc.textContent = e.target.value.length.toLocaleString() + " characters";
+      const meter = document.getElementById("material-meter");
+      if (meter) meter.outerHTML = materialMeter(e.target.value.length);
     });
     ["count-mc", "count-short", "count-flash"].forEach((id, i) => {
       const key = ["mc", "short", "flashcards"][i];
@@ -1796,6 +1904,7 @@
       case "filter-dept": state.classDept = el.dataset.dept; render(); break;
       case "filter-level": state.classLevel = el.dataset.level; render(); break;
       case "filter-unit": state.classUnit = el.dataset.unit; render(); break;
+      case "class-tab": state.classTab = el.dataset.tab; state.classUnit = "all"; render(); break;
       case "toggle-pin": e.stopPropagation(); togglePin(el.dataset.kind, el.dataset.id); break;
       case "open-pinned-test": openTestById(el.dataset.id, el.dataset.class); break;
       case "nav-mytests": state.view = "mytests"; loadMyTests(); break;

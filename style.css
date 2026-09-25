@@ -774,3 +774,53 @@ main.view-enter .lb-row:nth-child(n+4) { animation-delay: 0.12s; }
   .test-row { flex-direction: row; align-items: center; }
   .lb-row { padding: 0.7rem 0.8rem; gap: 0.6rem; }
 }
+
+/* ---- Upload guide, material meter, file chips ---- */
+.guide { padding: 0; margin-bottom: 1rem; }
+.guide summary { list-style: none; cursor: pointer; display: flex; gap: 0.8rem; align-items: center; padding: 1rem 1.25rem; }
+.guide summary::-webkit-details-marker { display: none; }
+.guide summary > span:last-child { display: flex; flex-direction: column; gap: 0.1rem; }
+.guide summary::after { content: "Show"; margin-left: auto; font-size: 0.8rem; font-weight: 600; color: var(--brand); }
+.guide[open] summary::after { content: "Hide"; }
+.guide-icon { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--brand-soft); color: var(--brand); flex: none; }
+.guide-icon .icon { width: 18px; height: 18px; }
+.guide-steps { margin: 0; padding: 0 1.25rem 0 3.4rem; display: grid; gap: 0.55rem; line-height: 1.5; }
+.guide-steps li::marker { color: var(--brand); font-weight: 700; }
+.guide-steps em { font-style: normal; font-weight: 600; background: var(--surface-2); padding: 0.05rem 0.35rem; border-radius: 5px; }
+.guide-foot { padding: 0.8rem 1.25rem 1.1rem 3.4rem; margin: 0; }
+.material-meter { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem; }
+.mm-bar { flex: 0 0 140px; height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.mm-bar span { display: block; height: 100%; border-radius: 99px; background: var(--ink-faint); transition: width 0.35s var(--ease), background 0.2s; }
+.material-meter.low .mm-bar span { background: var(--bad); }
+.material-meter.ok .mm-bar span { background: var(--gold); }
+.material-meter.good .mm-bar span, .material-meter.great .mm-bar span { background: var(--good); }
+.file-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: -0.25rem 0 0.9rem; }
+.file-chip { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; font-weight: 600; padding: 0.3rem 0.6rem; border-radius: 99px; background: var(--good-bg); color: var(--good); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip .icon { width: 13px; height: 13px; flex: none; }
+
+/* ---- Class page tabs + quality badges ---- */
+.class-tabs { margin: 0 0 0.75rem; }
+.class-tabs button .num { font-size: 0.75rem; opacity: 0.7; margin-left: 0.15rem; }
+.badge-best, .badge-top { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.7rem; font-weight: 700; padding: 0.12rem 0.5rem; border-radius: 99px; }
+.badge-best { background: var(--gold-soft); color: var(--gold); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gold) 35%, transparent); }
+.badge-top { background: var(--good-bg); color: var(--good); }
+.badge-best .icon, .badge-top .icon { width: 12px; height: 12px; }
+.empty-state.small { padding: 2rem 1rem; }
+.quality-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; margin-top: 0.35rem; }
+.q-score { font-size: 0.78rem; font-weight: 700; padding: 0.12rem 0.5rem; border-radius: 6px; }
+.q-score.high { background: var(--good-bg); color: var(--good); }
+.q-score.mid { background: var(--gold-soft); color: var(--gold); }
+.q-score.low { background: var(--bad-bg); color: var(--bad); }
+.points-rules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; margin-top: 0.9rem; }
+.points-rules > div { display: flex; gap: 0.6rem; align-items: flex-start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0.7rem 0.8rem; font-size: 0.85rem; color: var(--ink-soft); line-height: 1.4; }
+.points-rules .num { font-weight: 700; color: var(--brand); font-size: 1rem; flex: none; }
+@media (max-width: 720px) {
+  .points-rules { grid-template-columns: 1fr; }
+  .class-tabs { align-self: stretch; overflow-x: auto; flex-wrap: nowrap; }
+  .class-tabs button { flex: none; }
+  .guide-steps { padding-left: 2.6rem; }
+  .guide-foot { padding-left: 1.25rem; }
+  .mm-bar { flex-basis: 90px; }
+}
+.class-tabs { display: flex; width: max-content; max-width: 100%; }
+.unit-field select { width: 100%; max-width: 560px; }
